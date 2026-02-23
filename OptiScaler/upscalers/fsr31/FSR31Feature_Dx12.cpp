@@ -374,11 +374,14 @@ bool FSR31FeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_
         cfg.RcasEnabled.set_volatile_value(false);
     if (!OutputScaler->IsInit())
         cfg.OutputScalingEnabled.set_volatile_value(false);
+<<<<<<< HEAD
 
     _isInReset = false;
 
     if (uint32_t value = 0; inParams.Get(NVSDK_NGX_Parameter_Reset, &value) == NVSDK_NGX_Result_Success)
         _isInReset = value == 1;
+=======
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 
     _isInReset = false;
 
@@ -395,6 +398,7 @@ bool FSR31FeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_
     SetConfigurableBarriers(InCommandList);
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     bool isUpscalerReady = DispatchUpscaler(InCommandList, upscalerDesc);
 
     // Post-Process
@@ -407,11 +411,19 @@ bool FSR31FeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_
     // Post-Process
     PostProcess(InCommandList, inParams);
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    bool isUpscalerReady = DispatchUpscaler(InCommandList, upscalerDesc);
+
+    // Post-Process
+    if (isUpscalerReady)
+        PostProcess(InCommandList, inParams);
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 
     // Cleanup
     ResetConfigurableBarriers(InCommandList);
 
     _frameCount++;
+<<<<<<< HEAD
 <<<<<<< HEAD
     return isUpscalerReady;
 }
@@ -425,6 +437,13 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
 bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams,
     ffxDispatchDescUpscale& upscalerDesc)
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    return isUpscalerReady;
+}
+
+bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommandList,
+                                            const NVSDK_NGX_Parameter& inParams, ffxDispatchDescUpscale& upscalerDesc)
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 {
     auto& state = State::Instance();
     auto& cfg = *Config::Instance();
@@ -450,11 +469,16 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
     TryGetNGXVoidPointer(inParams, OptiKeys::FSR_TransparencyAndComp, _inputBuffers.TransparencyMask);
     TryGetNGXVoidPointer(inParams, OptiKeys::FSR_Reactive, _inputBuffers.ReactiveMask);
 <<<<<<< HEAD
+<<<<<<< HEAD
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
                          _inputBuffers.DlssBiasMaskFallback);
 =======
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, _inputBuffers.DlssBiasMaskFallback);
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
+                         _inputBuffers.DlssBiasMaskFallback);
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_ExposureTexture, _inputBuffers.ExposureMap);
 
     // If not AutoExposure, we must have an exposure texture. If missing, force AutoExposure reset.
@@ -476,11 +500,16 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
     // Mandatory Inputs
     upscalerDesc.color = ffxApiGetResourceDX12(_inputBuffers.Color, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 <<<<<<< HEAD
+<<<<<<< HEAD
     upscalerDesc.motionVectors =
         ffxApiGetResourceDX12(_inputBuffers.MotionVectors, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 =======
     upscalerDesc.motionVectors = ffxApiGetResourceDX12(_inputBuffers.MotionVectors, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    upscalerDesc.motionVectors =
+        ffxApiGetResourceDX12(_inputBuffers.MotionVectors, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
     upscalerDesc.depth = ffxApiGetResourceDX12(_inputBuffers.Depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
 
     // Output
@@ -735,12 +764,17 @@ void FSR31FeatureDx12::ConfigureUpscaler(const NVSDK_NGX_Parameter& inParams, ff
     if (Version() >= feature_version { 3, 1, 1 })
     {
 <<<<<<< HEAD
+<<<<<<< HEAD
         SetFfxUpscaleKeyValue(&_upscaleCtx, _velocity, cfg.FsrVelocity, FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR,
                               "Velocity");
 =======
         SetFfxUpscaleKeyValue(&_upscaleCtx, _velocity, cfg.FsrVelocity, 
             FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR, "Velocity");
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _velocity, cfg.FsrVelocity, FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR,
+                              "Velocity");
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
     }
 
     // Reactiveness, Shading, and Accumulation (FSR 3.1.4+)
@@ -769,11 +803,16 @@ void FSR31FeatureDx12::ConfigureUpscaler(const NVSDK_NGX_Parameter& inParams, ff
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 bool FSR31FeatureDx12::DispatchUpscaler(ID3D12GraphicsCommandList* InCommandList,
                                         const ffxDispatchDescUpscale& fsrParams)
 =======
 bool FSR31FeatureDx12::DispatchUpscaler(ID3D12GraphicsCommandList* InCommandList, const ffxDispatchDescUpscale& fsrParams)
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+bool FSR31FeatureDx12::DispatchUpscaler(ID3D12GraphicsCommandList* InCommandList,
+                                        const ffxDispatchDescUpscale& fsrParams)
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 {
     auto& state = State::Instance();
 
@@ -946,12 +985,16 @@ void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InComm
 
     // Transition FSR inputs to SRVs for reading
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
     TryResourceBarrier(InCommandList, _inputBuffers.Color, cfg.ColorResourceBarrier,
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, cfg.MVResourceBarrier,
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, cfg.DepthResourceBarrier,
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+<<<<<<< HEAD
 
     if (_inputBuffers.ExposureMap && !AutoExposure())
         TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, cfg.ExposureResourceBarrier,
@@ -966,15 +1009,21 @@ void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InComm
         cfg.MVResourceBarrier, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, 
         cfg.DepthResourceBarrier, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+=======
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 
     if (_inputBuffers.ExposureMap && !AutoExposure())
-        TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, 
-            cfg.ExposureResourceBarrier, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, cfg.ExposureResourceBarrier,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     // Transition output to UAV for writing
+<<<<<<< HEAD
     TryResourceBarrier(InCommandList, _mainOutput, 
         cfg.OutputResourceBarrier, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    TryResourceBarrier(InCommandList, _mainOutput, cfg.OutputResourceBarrier, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 }
 
 void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCommandList) const
@@ -983,6 +1032,9 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
 
     // Restore Barriers
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
     TryResourceBarrier(InCommandList, _inputBuffers.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                        cfg.ColorResourceBarrier);
     TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -990,6 +1042,7 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                        cfg.DepthResourceBarrier);
     TryResourceBarrier(InCommandList, _mainOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, cfg.OutputResourceBarrier);
+<<<<<<< HEAD
 
     if (_inputBuffers.ExposureMap)
         TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -1008,10 +1061,17 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
         TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, 
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, cfg.ExposureResourceBarrier);
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+
+    if (_inputBuffers.ExposureMap)
+        TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                           cfg.ExposureResourceBarrier);
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
 
     // Note: The original code only restored the reactive mask if it was the fallback dlss mask,
     // but generally restoring the native mask state is safer if we transitioned it.
     // Assuming original behavior for now:
+<<<<<<< HEAD
 <<<<<<< HEAD
     TryResourceBarrier(InCommandList, _inputBuffers.ReactiveMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                        cfg.MaskResourceBarrier);
@@ -1025,5 +1085,12 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
     if (_inputBuffers.DlssBiasMaskFallback) // Restore fallback if it was used
         TryResourceBarrier(InCommandList, _inputBuffers.DlssBiasMaskFallback, 
 >>>>>>> 103379424 (Add FSR Ray Regeneration and FSRD conversion shader)
+=======
+    TryResourceBarrier(InCommandList, _inputBuffers.ReactiveMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       cfg.MaskResourceBarrier);
+
+    if (_inputBuffers.DlssBiasMaskFallback) // Restore fallback if it was used
+        TryResourceBarrier(InCommandList, _inputBuffers.DlssBiasMaskFallback,
+>>>>>>> 212c47e4c (Use fused albedo to modulate and demodulate color)
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, cfg.MaskResourceBarrier);
 }
