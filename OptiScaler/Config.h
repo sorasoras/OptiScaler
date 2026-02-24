@@ -422,6 +422,9 @@ class Config
     CustomOptional<bool> Fsr4EnableWatermark { false };
     CustomOptional<bool> Fsr4DoNotLoadAmdxc64 { false };
 
+    // FSR-RR
+    CustomOptional<int> FfxDenoiserIndex { 0 };
+
     // FSR Common
     CustomOptional<float> FsrVerticalFov { 60.0f };
     CustomOptional<float> FsrHorizontalFov { 0.0f }; // off by default

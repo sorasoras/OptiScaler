@@ -698,6 +698,9 @@
     <ClInclude Include="shaders\hud_copy\precompile\HudCopy_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="upscalers\fsr31\FSRDFeature_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shaders\output_scaling\precompile\bcds_bicubic_Shader_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -795,6 +798,10 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\rcas\shaders\DA_RCAS_Shader.h">
+    <ClInclude Include="shaders\fsrd_input_conv\FSRDInputConv_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\fsrd_input_conv\precompile\FSRDInputConv_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -1200,6 +1207,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\render_ui\RUI_Dx12.cpp">
+        <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="upscalers\fsr31\FSRDFeature_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\fsrd_input_conv\FSRDInputConv_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="spoofing\User32_Spoofing.cpp">

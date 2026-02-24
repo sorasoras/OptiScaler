@@ -236,6 +236,10 @@ class State
     std::vector<uint64_t> ffxFGVersionIds {};
     std::optional<uint32_t> currentFsr4Preset {};
 
+    // FSR-RR
+    std::vector<const char*> ffxDenoiserVersionNames {};
+    std::vector<uint64_t> ffxDenoiserVersionIds {};
+
     // Linux checks
     bool isRunningOnLinux = false;
     bool isRunningOnDXVK = false;

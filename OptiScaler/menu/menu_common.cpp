@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "menu_common.h"
 
 #include "font/Hack_Compressed.h"
@@ -1277,6 +1277,7 @@ void MenuCommon::AddDx11Backends(std::string* code, std::string* name)
 
 void MenuCommon::AddDx12Backends(std::string* code, std::string* name)
 {
+    auto& state = State::Instance();
     std::string selectedUpscalerName = "";
     bool fsr4Possible =
         Config::Instance()->Fsr4Update.value_or_default() || State::Instance().isRunningOnRDNA4.value_or(false) ||
@@ -1284,6 +1285,7 @@ void MenuCommon::AddDx12Backends(std::string* code, std::string* name)
          FfxApiProxy::VersionDx12_SR() >= feature_version { 4, 1, 1 });
 
     std::string fsr3xName = fsr4Possible ? "FSR 3.X/4" : "FSR 3.X";
+    const bool canUseFSR_RR = FfxApiProxy::VersionDx12_RR().major > 0;
 
     if (State::Instance().newBackend == "fsr21" || (State::Instance().newBackend == "" && *code == "fsr21"))
         selectedUpscalerName = "FSR 2.1.2";
@@ -1291,6 +1293,8 @@ void MenuCommon::AddDx12Backends(std::string* code, std::string* name)
         selectedUpscalerName = "FSR 2.2.1";
     else if (State::Instance().newBackend == "fsr31" || (State::Instance().newBackend == "" && *code == "fsr31"))
         selectedUpscalerName = fsr3xName;
+    else if (state.newBackend == OptiKeys::FSR_RR || (state.newBackend == "" && *code == OptiKeys::FSR_RR))
+        selectedUpscalerName = "FSR Ray Regeneration";
     else if (Config::Instance()->DLSSEnabled.value_or_default() &&
              (State::Instance().newBackend == "dlss" || (State::Instance().newBackend == "" && *code == "dlss")))
         selectedUpscalerName = "DLSS";
@@ -1311,6 +1315,8 @@ void MenuCommon::AddDx12Backends(std::string* code, std::string* name)
         if (ImGui::Selectable(fsr3xName.c_str(), *code == "fsr31"))
             State::Instance().newBackend = "fsr31";
 
+        if (canUseFSR_RR && ImGui::Selectable("FSR Ray Regeneration", *code == OptiKeys::FSR_RR))
+            state.newBackend = OptiKeys::FSR_RR;
         if (Config::Instance()->DLSSEnabled.value_or_default() && ImGui::Selectable("DLSS", *code == "dlss"))
             State::Instance().newBackend = "dlss";
 
@@ -3258,6 +3264,10 @@ bool MenuCommon::RenderMenu()
                     // FFX -----------------
                     if (currentBackend.rfind("fsr", 0) == 0 && currentFeature->Name() != "DLSSD" &&
                         (currentBackend == "fsr31" || currentBackend == "fsr31_12"))
+                    if (currentBackend.rfind("fsr", 0) == 0 && state.currentFeature->Name() != "DLSSD" &&
+                        (currentBackend == OptiKeys::FSR31 || 
+                        currentBackend == OptiKeys::FSR_RR ||
+                        currentBackend == OptiKeys::FSR31_11on12))
                     {
                         ImGui::SeparatorText("FFX Settings");
 
@@ -3266,6 +3276,8 @@ bool MenuCommon::RenderMenu()
 
                         if (currentBackend == "fsr31" ||
                             currentBackend == "fsr31_12" && state.ffxUpscalerVersionNames.size() > 0)
+                        if (currentBackend == OptiKeys::FSR31 || currentBackend == OptiKeys::FSR_RR || 
+                            currentBackend == OptiKeys::FSR31_11on12 && state.ffxUpscalerVersionNames.size() > 0)
                         {
                             ImGui::PushItemWidth(135.0f * menuResScale);
 
