@@ -641,14 +641,30 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     }
     else if (InFeatureID == NVSDK_NGX_Feature_RayReconstruction)
     {
-        LOG_INFO("creating new DLSSD feature");
-
-        Dx12Contexts[handleId] = {};
-
-        if (!FeatureProvider_Dx12::GetFeature("dlssd", handleId, InParameters, &Dx12Contexts[handleId].feature))
+        // Route Ray Reconstruction to FSR-RR on non-Nvidia hardware
+        if (!State::Instance().isRunningOnNvidia)
         {
-            LOG_ERROR("DLSSD can't created");
-            return NVSDK_NGX_Result_Fail;
+            LOG_INFO("creating new FSR-RR (Ray Regeneration) feature");
+
+            Dx12Contexts[handleId] = {};
+
+            if (!FeatureProvider_Dx12::GetFeature("fsr-rr", handleId, InParameters, &Dx12Contexts[handleId].feature))
+            {
+                LOG_ERROR("FSR-RR can't created");
+                return NVSDK_NGX_Result_Fail;
+            }
+        }
+        else
+        {
+            LOG_INFO("creating new DLSSD feature");
+
+            Dx12Contexts[handleId] = {};
+
+            if (!FeatureProvider_Dx12::GetFeature("dlssd", handleId, InParameters, &Dx12Contexts[handleId].feature))
+            {
+                LOG_ERROR("DLSSD can't created");
+                return NVSDK_NGX_Result_Fail;
+            }
         }
     }
 
