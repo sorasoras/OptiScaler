@@ -1,9 +1,9 @@
 #pragma once
 #include "SysUtils.h"
-
+#include <concepts>
 #include "Config.h"
-
 #include <ankerl/unordered_dense.h>
+#include "proxies/FfxApi_Proxy.h"
 
 // Use real NVNGX params encapsulated in custom one
 // Which is not working correctly
@@ -17,6 +17,24 @@
 #else
 #define LOG_PARAM(msg, ...)
 #endif
+
+/** @brief Indicates the lifetime management required by an NGX parameter table. */
+namespace NGX_AllocTypes
+{
+// Key used to get/set enum from table
+constexpr std::string_view AllocKey = "OptiScaler.ParamAllocType";
+
+constexpr uint32_t Unknown = 0;
+// Standard behavior in modern DLSS. Created with NGX Allocate(). Freed with Destroy().
+constexpr uint32_t NVDynamic = 1;
+// Legacy DLSS. Lifetime managed internally by the SDK.
+constexpr uint32_t NVPersistent = 2;
+// OptiScaler implementation used internally with new/delete.
+constexpr uint32_t InternDynamic = 3;
+// OptiScaler implementation for legacy applications. Must maintain a persistent instance
+// for the lifetime of the application.
+constexpr uint32_t InternPersistent = 4;
+} // namespace NGX_AllocTypes
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
 /// configuration.
@@ -411,11 +429,11 @@ inline static NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_DLSS_GetStatsCallback(NVSDK_
 /// values.
 inline static void InitNGXParameters(NVSDK_NGX_Parameter* InParams)
 {
+    const auto& state = State::Instance();
+
     InParams->Set(NVSDK_NGX_Parameter_SuperSampling_Available, 1);
 
-    if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-        State::Instance().GameEngine == GameEngineType::Unreal ||
-        State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
+    if (state.NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL || state.gameQuirks & GameQuirk::ForceUnrealEngine)
     {
         InParams->Set(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMajor, 10);
         InParams->Set(NVSDK_NGX_Parameter_SuperSampling_MinDriverVersionMinor, 10);
@@ -484,13 +502,11 @@ inline static void InitNGXParameters(NVSDK_NGX_Parameter* InParams)
     InParams->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 1);
     InParams->Set(NVSDK_NGX_Parameter_RTXValue, 0);
 
-    if (!State::Instance().isRunningOnNvidia)
+    if (!state.isRunningOnNvidia)
     {
         InParams->Set("SuperSamplingDenoising.NeedsUpdatedDriver", 0);
 
-        if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-            State::Instance().GameEngine == GameEngineType::Unreal ||
-            State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
+        if (state.NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL || state.gameQuirks & GameQuirk::ForceUnrealEngine)
         {
             InParams->Set("SuperSamplingDenoising.MinDriverVersionMajor", 10);
             InParams->Set("SuperSamplingDenoising.MinDriverVersionMinor", 10);
@@ -501,12 +517,26 @@ inline static void InitNGXParameters(NVSDK_NGX_Parameter* InParams)
             InParams->Set("SuperSamplingDenoising.MinDriverVersionMinor", 0);
         }
 
-        InParams->Set("SuperSamplingDenoising.Available", 0);
-        InParams->Set("SuperSamplingDenoising.FeatureInitResult", 0);
+        bool ssDenoiseAvailable = false;
+
+        if (state.currentD3D12Device != nullptr)
+        {
+            if (!FfxApiProxy::IsDenoiserReady())
+                FfxApiProxy::InitFfxDx12();
+
+            ssDenoiseAvailable = FfxApiProxy::IsSRReady() && FfxApiProxy::IsDenoiserReady() &&
+                                 FfxApiProxy::VersionDx12_RR() == FfxApiProxy::VersionTarget_RR();
+
+            if (ssDenoiseAvailable)
+                LOG_DEBUG("Setting DLSSD flags for FSR Ray Regeneration");
+        }
+
+        InParams->Set("SuperSamplingDenoising.Available", ssDenoiseAvailable);
+        InParams->Set("SuperSamplingDenoising.FeatureInitResult", ssDenoiseAvailable);
     }
 
     // not ideal as it doesn't take different APIs into account
-    if (State::Instance().activeFgInput == FGInput::Nukems || State::Instance().activeFgInput == FGInput::DLSSG)
+    if (state.activeFgInput == FGInput::Nukems || state.activeFgInput == FGInput::DLSSG)
     {
         InParams->Set("FrameGeneration.Available", 1);
         InParams->Set("FrameGeneration.NeedsUpdatedDriver", 0);
@@ -516,9 +546,7 @@ inline static void InitNGXParameters(NVSDK_NGX_Parameter* InParams)
         InParams->Set(NVSDK_NGX_Parameter_FrameInterpolation_FeatureInitResult, 1);
         InParams->Set("DLSSG.MultiFrameCountMax", 1);
 
-        if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-            State::Instance().GameEngine == GameEngineType::Unreal ||
-            State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
+        if (state.NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL || state.gameQuirks & GameQuirk::ForceUnrealEngine)
         {
             InParams->Set(NVSDK_NGX_Parameter_FrameInterpolation_MinDriverVersionMajor, 10);
             InParams->Set("FrameGeneration.MinDriverVersionMajor", 10);
@@ -531,7 +559,7 @@ inline static void InitNGXParameters(NVSDK_NGX_Parameter* InParams)
     }
 
     // Multi Fake Frames not supported by Nukems
-    // if (State::Instance().activeFgInput == FGInput::Nukems)
+    // if (state.activeFgInput == FGInput::Nukems)
     //    InParams->Set("DLSSG.MultiFrameCountMax", 1);
 }
 
@@ -672,6 +700,15 @@ struct Parameter
 struct NVNGX_Parameters : public NVSDK_NGX_Parameter
 {
     std::string Name;
+
+    NVNGX_Parameters(std::string_view name, bool isPersistent) : Name(name)
+    {
+        // Old flag used to indicate custom table. Obsolete?
+        Set("OptiScaler", 1);
+        // New tracking flag
+        Set(NGX_AllocTypes::AllocKey.data(),
+            isPersistent ? NGX_AllocTypes::InternPersistent : NGX_AllocTypes::InternDynamic);
+    }
 
 #ifdef ENABLE_ENCAPSULATED_PARAMS
     NVSDK_NGX_Parameter* OriginalParam = nullptr;
@@ -937,7 +974,15 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
     void Reset() override
     {
         if (!m_values.empty())
+        {
+            // Preserve usage type if set
+            uint32_t allocType = NGX_AllocTypes::Unknown;
+            NVSDK_NGX_Result result = Get(NGX_AllocTypes::AllocKey.data(), &allocType);
             m_values.clear();
+
+            if (result != NVSDK_NGX_Result_Fail)
+                Set(NGX_AllocTypes::AllocKey.data(), allocType);
+        }
 
         LOG_DEBUG("Start");
 
@@ -984,13 +1029,100 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
     }
 };
 
-/// @brief Allocates and populates a new NGX param map.
-inline static NVNGX_Parameters* GetNGXParameters(std::string InName)
+/**
+ * @brief Allocates and populates a new custom NGX param map. The persistence flag indicates
+ * whether the table should be destroyed when NGX DestroyParameters() is used.
+ */
+inline static NVNGX_Parameters* GetNGXParameters(std::string_view name, bool isPersistent)
 {
-    auto params = new NVNGX_Parameters();
-    params->Name = InName;
+    auto params = new NVNGX_Parameters(name, isPersistent);
     InitNGXParameters(params);
-    params->Set("OptiScaler", 1);
-
     return params;
 }
+
+/**
+ * @brief Sets a custom tracking tag to indicate the memory management strategy required by
+ * the table, indicated by NGX_AllocTypes.
+ */
+inline static void SetNGXParamAllocType(NVSDK_NGX_Parameter& params, uint32_t allocType)
+{
+    params.Set(NGX_AllocTypes::AllocKey.data(), allocType);
+}
+
+/**
+ * @brief Retrieves a value from NGX parameters, provided the feature is toggled on.
+ * @return True if 'isEnabled' is true AND the NGX parameter was successfully retrieved.
+ */
+template <typename T>
+static bool TryGetToggleableNGXParam(const NVSDK_NGX_Parameter& ngxParams, const char* key,
+                                     const CustomOptional<bool>& isEnabled, T& outValue)
+{
+    return isEnabled.value_or_default() && (ngxParams.Get(key, &outValue) == NVSDK_NGX_Result_Success);
+}
+
+/**
+ * @brief Attempts to retrieve a pointer-type NGX parameter.
+ * @tparam T Must be a pointer type (e.g., ID3D12Resource*).
+ * @return True on success.
+ */
+template <typename T>
+    requires std::is_pointer_v<T>
+static bool TryGetNGXVoidPointer(const NVSDK_NGX_Parameter& ngxParams, const char* key, T& outValue)
+{
+    NVSDK_NGX_Result result = ngxParams.Get(key, &outValue);
+
+    // Fallback
+    if (result != NVSDK_NGX_Result_Success)
+        result = ngxParams.Get(key, reinterpret_cast<void**>(&outValue));
+
+    return (result == NVSDK_NGX_Result_Success) && outValue != nullptr;
+}
+
+/**
+ * @brief Attempts to safely delete an NGX parameter table. Dynamically allocated NGX tables use the NGX API.
+ * OptiScaler tables use delete. Persistent tables are not freed.
+ */
+template <typename PFN_DestroyNGXParameters>
+    requires std::is_pointer_v<PFN_DestroyNGXParameters>
+static inline bool TryDestroyNGXParameters(NVSDK_NGX_Parameter* InParameters, PFN_DestroyNGXParameters NVFree = nullptr)
+{
+    if (InParameters == nullptr)
+        return false;
+
+    uint32_t allocType = NGX_AllocTypes::Unknown;
+    NVSDK_NGX_Result result = InParameters->Get(NGX_AllocTypes::AllocKey.data(), &allocType);
+
+    // Key not set. Either a bug, or the client application called Reset() on the table before destroying.
+    // Derived type unknown if this happens. Not safe to delete. Leaking is the best option.
+    if (result == NVSDK_NGX_Result_Fail)
+    {
+        LOG_WARN("Destroy called on NGX table with unset alloc type. Leaking.");
+        return false;
+    }
+
+    if (allocType == NGX_AllocTypes::NVDynamic)
+    {
+        if (NVFree != nullptr)
+        {
+            LOG_DEBUG("Calling NVFree");
+            result = NVFree(InParameters);
+            LOG_DEBUG("Calling NVFree result: {0:X}", (UINT) result);
+            return true;
+        }
+        else
+            return false;
+    }
+    else if (allocType == NGX_AllocTypes::InternDynamic)
+    {
+        LOG_DEBUG("Deleting NGX table");
+        delete static_cast<NVNGX_Parameters*>(InParameters);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Tries to get additional camera configuration for upscaling from Streamline hooks.
+ */
+bool TryGetNGXCamConfigFromStreamline(NVSDK_NGX_Parameter* InParameters);

@@ -1,10 +1,63 @@
 #include <pch.h>
 #include <Config.h>
 #include <Util.h>
-
 #include <proxies/FfxApi_Proxy.h>
-
 #include "FSR31Feature_Dx12.h"
+#include "NVNGX_Parameter.h"
+#include "MathUtils.h"
+
+#define FFX_UPSCALER_VERSION_MAJOR 4
+#define FFX_UPSCALER_VERSION_MINOR 0
+#define FFX_UPSCALER_VERSION_PATCH 3
+
+#define FFX_UPSCALER_MAKE_VERSION(major, minor, patch) (((major) << 22) | ((minor) << 12) | (patch))
+#define FFX_UPSCALER_VERSION                                                                                           \
+    FFX_UPSCALER_MAKE_VERSION(FFX_UPSCALER_VERSION_MAJOR, FFX_UPSCALER_VERSION_MINOR, FFX_UPSCALER_VERSION_PATCH)
+
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION FFX_API_MAKE_EFFECT_SUB_ID(FFX_API_EFFECT_ID_UPSCALE, 0x0b)
+struct ffxCreateContextDescUpscaleVersion
+{
+    ffxCreateContextDescHeader header;
+    uint32_t version; ///< The version of the API the application was built against. This must be set to
+                      ///< FFX_UPSCALER_VERSION.
+};
+
+using namespace OptiMath;
+using InputResources = FSR31FeatureDx12::InputResources;
+
+template <typename T>
+static bool TryGetLoggedResource(const NVSDK_NGX_Parameter& ngxParams, const char* key, T*& outValue)
+{
+    const bool success = TryGetNGXVoidPointer(ngxParams, key, outValue);
+
+    if (success)
+        LOG_DEBUG("{} exists..", key);
+    else
+        LOG_ERROR("{} is missing!!", key);
+
+    return success;
+}
+
+static void SetFfxUpscaleKeyValue(ffxContext* ctx, float& currentValue, const CustomOptional<float>& newValue,
+                                        uint64_t key, const char* featureName)
+{
+    const float val = newValue.value_or_default();
+
+    if (currentValue != val)
+    {
+        currentValue = val;
+
+        ffxConfigureDescUpscaleKeyValue config {};
+        config.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
+        config.key = key;
+        config.ptr = &currentValue;
+
+        const ffxReturnCode_t result = FfxApiProxy::D3D12_Configure(ctx, &config.header);
+
+        if (result != FFX_API_RETURN_OK)
+            LOG_WARN("{} configure result: {}", featureName, (UINT) result);
+    }
+}
 
 NVSDK_NGX_Parameter* FSR31FeatureDx12::SetParameters(NVSDK_NGX_Parameter* InParameters)
 {
@@ -14,16 +67,33 @@ NVSDK_NGX_Parameter* FSR31FeatureDx12::SetParameters(NVSDK_NGX_Parameter* InPara
 
 FSR31FeatureDx12::FSR31FeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
     : FSR31Feature(InHandleId, InParameters), IFeature_Dx12(InHandleId, InParameters),
-      IFeature(InHandleId, SetParameters(InParameters))
+      IFeature(InHandleId, SetParameters(InParameters)), 
+      _isInReset(false), 
+      _isSuperScaling(false),
+      _isSharpening(false), 
+      _inputBuffers({}), 
+      _upscalerOutput(nullptr), 
+      _mainOutput(nullptr)
 {
-    FfxApiProxy::InitFfxDx12();
+    InParameters->Set("OptiScaler.SupportsUpscaleSize", true);
 
+    // Initialize FFX API
+    FfxApiProxy::InitFfxDx12();
     _moduleLoaded = FfxApiProxy::IsSRReady();
 
     if (_moduleLoaded)
         LOG_INFO("amd_fidelityfx_dx12.dll methods loaded!");
     else
         LOG_ERROR("can't load amd_fidelityfx_dx12.dll methods!");
+}
+
+inline FSR31FeatureDx12::~FSR31FeatureDx12()
+{
+    if (State::Instance().isShuttingDown)
+        return;
+
+    if (_upscaleCtx != nullptr)
+        FfxApiProxy::D3D12_DestroyContext(&_upscaleCtx, NULL);
 }
 
 bool FSR31FeatureDx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCommandList,
@@ -36,626 +106,26 @@ bool FSR31FeatureDx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* I
 
     Device = InDevice;
 
+    // Attempt to create the FSR context
     if (InitFSR3(InParameters))
     {
+        // Initialize ImGui if not already disabled/created
         if (!Config::Instance()->OverlayMenu.value_or_default() && (Imgui == nullptr || Imgui.get() == nullptr))
             Imgui = std::make_unique<Menu_Dx12>(Util::GetProcessWindow(), InDevice);
 
+        // OutputScaler: Handles resizing if FSR's internal upscaling isn't used or for custom scaling
         OutputScaler = std::make_unique<OS_Dx12>("Output Scaling", InDevice, (TargetWidth() < DisplayWidth()));
+
+        // RCAS: Robust Contrast Adaptive Sharpening
         RCAS = std::make_unique<RCAS_Dx12>("RCAS", InDevice);
+
+        // Bias: Handles DLSS bias -> reactive mask conversion, if enabled
         Bias = std::make_unique<Bias_Dx12>("Bias", InDevice);
 
         return true;
     }
 
     return false;
-}
-
-bool FSR31FeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
-{
-    LOG_FUNC();
-
-    if (!IsInited())
-        return false;
-
-    if (!RCAS->IsInit())
-        Config::Instance()->RcasEnabled.set_volatile_value(false);
-
-    if (!OutputScaler->IsInit())
-        Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
-
-    if (Config::Instance()->DADepthIsLinear.value_for_config_ignore_default() == std::nullopt)
-        Config::Instance()->DADepthIsLinear.set_volatile_value(false);
-
-    struct ffxDispatchDescUpscale params = { 0 };
-    params.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
-
-    params.flags = 0;
-
-    if (Config::Instance()->FsrDebugView.value_or_default() &&
-        (Version() < feature_version { 4, 0, 0 } || Config::Instance()->Fsr4EnableDebugView.value_or_default()))
-    {
-        params.flags |= FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW;
-    }
-
-    if (Config::Instance()->FsrNonLinearPQ.value_or_default())
-        params.flags |= FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_PQ;
-    else if (Config::Instance()->FsrNonLinearSRGB.value_or_default())
-        params.flags |= FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
-
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &params.jitterOffset.x);
-    InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &params.jitterOffset.y);
-
-    if (Config::Instance()->OverrideSharpness.value_or_default())
-        _sharpness = Config::Instance()->Sharpness.value_or_default();
-    else
-        _sharpness = GetSharpness(InParameters);
-
-    if (Config::Instance()->RcasEnabled.value_or_default())
-    {
-        params.enableSharpening = false;
-        params.sharpness = 0.0f;
-    }
-    else
-    {
-        if (_sharpness > 1.0f)
-            _sharpness = 1.0f;
-
-        params.enableSharpening = _sharpness > 0.0f;
-        params.sharpness = _sharpness;
-    }
-
-    // Force enable RCAS when in FSR4 debug view mode
-    // it crashes when sharpening is disabled
-    // Debug view expects RCAS output (now sure why)
-    if (Version() >= feature_version { 4, 0, 2 } && Config::Instance()->FsrDebugView.value_or_default() &&
-        Config::Instance()->Fsr4EnableDebugView.value_or_default() && !params.enableSharpening)
-    {
-        params.enableSharpening = true;
-        params.sharpness = 0.01f;
-    }
-
-    LOG_DEBUG("Jitter Offset: {0}x{1}", params.jitterOffset.x, params.jitterOffset.y);
-
-    unsigned int reset;
-    InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
-    params.reset = (reset == 1);
-
-    GetRenderResolution(InParameters, &params.renderSize.width, &params.renderSize.height);
-
-    bool useSS =
-        Config::Instance()->OutputScalingEnabled.value_or_default() && (LowResMV() || RenderWidth() == DisplayWidth());
-
-    LOG_DEBUG("Input Resolution: {0}x{1}", params.renderSize.width, params.renderSize.height);
-
-    params.commandList = InCommandList;
-
-    ID3D12Resource* paramColor;
-    if (InParameters->Get(NVSDK_NGX_Parameter_Color, &paramColor) != NVSDK_NGX_Result_Success)
-        InParameters->Get(NVSDK_NGX_Parameter_Color, (void**) &paramColor);
-
-    if (paramColor)
-    {
-        LOG_DEBUG("Color exist..");
-
-        if (Config::Instance()->ColorResourceBarrier.has_value())
-        {
-            ResourceBarrier(InCommandList, paramColor,
-                            (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value(),
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
-        else if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-                 State::Instance().GameEngine == GameEngineType::Unreal ||
-                 State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
-        {
-            Config::Instance()->ColorResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_RENDER_TARGET);
-            ResourceBarrier(InCommandList, paramColor, D3D12_RESOURCE_STATE_RENDER_TARGET,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
-
-        params.color = ffxApiGetResourceDX12(paramColor, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    }
-    else
-    {
-        LOG_ERROR("Color not exist!!");
-        return false;
-    }
-
-    ID3D12Resource* paramVelocity;
-    if (InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, &paramVelocity) != NVSDK_NGX_Result_Success)
-        InParameters->Get(NVSDK_NGX_Parameter_MotionVectors, (void**) &paramVelocity);
-
-    if (paramVelocity)
-    {
-        LOG_DEBUG("MotionVectors exist..");
-
-        if (Config::Instance()->MVResourceBarrier.has_value())
-        {
-            ResourceBarrier(InCommandList, paramVelocity,
-                            (D3D12_RESOURCE_STATES) Config::Instance()->MVResourceBarrier.value(),
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
-        else if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-                 State::Instance().GameEngine == GameEngineType::Unreal ||
-                 State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
-        {
-            Config::Instance()->MVResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            ResourceBarrier(InCommandList, paramVelocity, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
-
-        params.motionVectors = ffxApiGetResourceDX12(paramVelocity, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    }
-    else
-    {
-        LOG_ERROR("MotionVectors not exist!!");
-        return false;
-    }
-
-    ID3D12Resource* paramOutput;
-    if (InParameters->Get(NVSDK_NGX_Parameter_Output, &paramOutput) != NVSDK_NGX_Result_Success)
-        InParameters->Get(NVSDK_NGX_Parameter_Output, (void**) &paramOutput);
-
-    if (paramOutput)
-    {
-        LOG_DEBUG("Output exist..");
-
-        if (Config::Instance()->OutputResourceBarrier.has_value())
-            ResourceBarrier(InCommandList, paramOutput,
-                            (D3D12_RESOURCE_STATES) Config::Instance()->OutputResourceBarrier.value(),
-                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        if (useSS)
-        {
-            if (OutputScaler->CreateBufferResource(Device, paramOutput, TargetWidth(), TargetHeight(),
-                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
-            {
-                OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                params.output = ffxApiGetResourceDX12(OutputScaler->Buffer(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-            }
-            else
-                params.output = ffxApiGetResourceDX12(paramOutput, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-        else
-            params.output = ffxApiGetResourceDX12(paramOutput, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        if (Config::Instance()->RcasEnabled.value_or_default() &&
-            (_sharpness > 0.0f || (Config::Instance()->MotionSharpnessEnabled.value_or_default() &&
-                                   Config::Instance()->MotionSharpness.value_or_default() > 0.0f)) &&
-            RCAS->IsInit() &&
-            RCAS->CreateBufferResource(Device, (ID3D12Resource*) params.output.resource,
-                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
-        {
-            RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            params.output = ffxApiGetResourceDX12(RCAS->Buffer(), FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
-        }
-    }
-    else
-    {
-        LOG_ERROR("Output not exist!!");
-        return false;
-    }
-
-    ID3D12Resource* paramDepth;
-    if (InParameters->Get(NVSDK_NGX_Parameter_Depth, &paramDepth) != NVSDK_NGX_Result_Success)
-        InParameters->Get(NVSDK_NGX_Parameter_Depth, (void**) &paramDepth);
-
-    if (paramDepth)
-    {
-        LOG_DEBUG("Depth exist..");
-
-        if (Config::Instance()->DepthResourceBarrier.has_value())
-            ResourceBarrier(InCommandList, paramDepth,
-                            (D3D12_RESOURCE_STATES) Config::Instance()->DepthResourceBarrier.value(),
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        params.depth = ffxApiGetResourceDX12(paramDepth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    }
-    else
-    {
-        LOG_ERROR("Depth not exist!!");
-
-        if (LowResMV())
-            return false;
-    }
-
-    ID3D12Resource* paramExp = nullptr;
-    if (AutoExposure())
-    {
-        LOG_DEBUG("AutoExposure enabled!");
-    }
-    else
-    {
-        if (InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, &paramExp) != NVSDK_NGX_Result_Success)
-            InParameters->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &paramExp);
-
-        if (paramExp)
-        {
-            LOG_DEBUG("ExposureTexture exist..");
-
-            if (Config::Instance()->ExposureResourceBarrier.has_value())
-                ResourceBarrier(InCommandList, paramExp,
-                                (D3D12_RESOURCE_STATES) Config::Instance()->ExposureResourceBarrier.value(),
-                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-            params.exposure = ffxApiGetResourceDX12(paramExp, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        }
-        else
-        {
-            LOG_DEBUG("AutoExposure disabled but ExposureTexture is not exist, it may cause problems!!");
-            State::Instance().AutoExposure = true;
-            State::Instance().changeBackend[Handle()->Id] = true;
-            return true;
-        }
-    }
-
-    ID3D12Resource* paramTransparency = nullptr;
-    if (InParameters->Get("FSR.transparencyAndComposition", &paramTransparency) == NVSDK_NGX_Result_Success)
-        InParameters->Get("FSR.transparencyAndComposition", (void**) &paramTransparency);
-
-    ID3D12Resource* paramReactiveMask = nullptr;
-    if (InParameters->Get("FSR.reactive", &paramReactiveMask) == NVSDK_NGX_Result_Success)
-        InParameters->Get("FSR.reactive", (void**) &paramReactiveMask);
-
-    ID3D12Resource* paramReactiveMask2 = nullptr;
-    if (InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, &paramReactiveMask2) !=
-        NVSDK_NGX_Result_Success)
-        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void**) &paramReactiveMask2);
-
-    if (!Config::Instance()->DisableReactiveMask.value_or(paramReactiveMask == nullptr &&
-                                                          paramReactiveMask2 == nullptr))
-    {
-        if (paramTransparency != nullptr)
-        {
-            LOG_DEBUG("Using FSR transparency mask..");
-            params.transparencyAndComposition =
-                ffxApiGetResourceDX12(paramTransparency, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        }
-
-        if (paramReactiveMask != nullptr)
-        {
-            LOG_DEBUG("Using FSR reactive mask..");
-            params.reactive = ffxApiGetResourceDX12(paramReactiveMask, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        }
-        else
-        {
-            if (paramReactiveMask2 != nullptr)
-            {
-                LOG_DEBUG("Input Bias mask exist..");
-                Config::Instance()->DisableReactiveMask.set_volatile_value(false);
-
-                if (Config::Instance()->MaskResourceBarrier.has_value())
-                    ResourceBarrier(InCommandList, paramReactiveMask2,
-                                    (D3D12_RESOURCE_STATES) Config::Instance()->MaskResourceBarrier.value(),
-                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-                if (paramTransparency == nullptr && Config::Instance()->FsrUseMaskForTransparency.value_or_default())
-                    params.transparencyAndComposition =
-                        ffxApiGetResourceDX12(paramReactiveMask2, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-
-                if (Config::Instance()->DlssReactiveMaskBias.value_or_default() > 0.0f && Bias->IsInit() &&
-                    Bias->CreateBufferResource(Device, paramReactiveMask2, D3D12_RESOURCE_STATE_UNORDERED_ACCESS) &&
-                    Bias->CanRender())
-                {
-                    Bias->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-                    if (Bias->Dispatch(Device, InCommandList, paramReactiveMask2,
-                                       Config::Instance()->DlssReactiveMaskBias.value_or_default(), Bias->Buffer()))
-                    {
-                        Bias->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                        params.reactive = ffxApiGetResourceDX12(Bias->Buffer(), FFX_API_RESOURCE_STATE_COMPUTE_READ);
-                    }
-                }
-                else
-                {
-                    LOG_DEBUG("Skipping reactive mask, Bias: {0}, Bias Init: {1}, Bias CanRender: {2}",
-                              Config::Instance()->DlssReactiveMaskBias.value_or_default(), Bias->IsInit(),
-                              Bias->CanRender());
-                }
-            }
-        }
-    }
-
-    _hasColor = params.color.resource != nullptr;
-    _hasDepth = params.depth.resource != nullptr;
-    _hasMV = params.motionVectors.resource != nullptr;
-    _hasExposure = params.exposure.resource != nullptr;
-    _hasTM = params.transparencyAndComposition.resource != nullptr;
-    _accessToReactiveMask = paramReactiveMask != nullptr;
-    _hasOutput = params.output.resource != nullptr;
-
-    // For FSR 4 as it seems to be missing some conversions from typeless
-    // transparencyAndComposition and exposure might be unnecessary here
-    if (Version().major >= 4)
-    {
-        params.color.description.format = ffxResolveTypelessFormat(params.color.description.format);
-        params.depth.description.format = ffxResolveTypelessFormat(params.depth.description.format);
-        params.motionVectors.description.format = ffxResolveTypelessFormat(params.motionVectors.description.format);
-        params.exposure.description.format = ffxResolveTypelessFormat(params.exposure.description.format);
-        params.transparencyAndComposition.description.format =
-            ffxResolveTypelessFormat(params.transparencyAndComposition.description.format);
-        params.output.description.format = ffxResolveTypelessFormat(params.output.description.format);
-    }
-
-    params.motionVectorScale.x = 1.0f;
-    params.motionVectorScale.y = 1.0f;
-
-    if (InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &params.motionVectorScale.x) != NVSDK_NGX_Result_Success ||
-        InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &params.motionVectorScale.y) != NVSDK_NGX_Result_Success)
-    {
-        LOG_WARN("Can't get motion vector scales!");
-    }
-
-    LOG_DEBUG("Sharpness: {0}", params.sharpness);
-
-    if (!Config::Instance()->FsrUseFsrInputValues.value_or_default() ||
-        InParameters->Get("FSR.cameraNear", &params.cameraNear) != NVSDK_NGX_Result_Success)
-    {
-        if (DepthInverted())
-            params.cameraFar = Config::Instance()->FsrCameraNear.value_or_default();
-        else
-            params.cameraNear = Config::Instance()->FsrCameraNear.value_or_default();
-    }
-
-    if (!Config::Instance()->FsrUseFsrInputValues.value_or_default() ||
-        InParameters->Get("FSR.cameraFar", &params.cameraFar) != NVSDK_NGX_Result_Success)
-    {
-        if (DepthInverted())
-            params.cameraNear = Config::Instance()->FsrCameraFar.value_or_default();
-        else
-            params.cameraFar = Config::Instance()->FsrCameraFar.value_or_default();
-    }
-
-    if (!Config::Instance()->FsrUseFsrInputValues.value_or_default() ||
-        InParameters->Get("FSR.cameraFovAngleVertical", &params.cameraFovAngleVertical) != NVSDK_NGX_Result_Success)
-    {
-        if (Config::Instance()->FsrVerticalFov.has_value())
-            params.cameraFovAngleVertical = Config::Instance()->FsrVerticalFov.value() * 0.0174532925199433f;
-        else if (Config::Instance()->FsrHorizontalFov.value_or_default() > 0.0f)
-            params.cameraFovAngleVertical =
-                2.0f * atan((tan(Config::Instance()->FsrHorizontalFov.value() * 0.0174532925199433f) * 0.5f) /
-                            (float) TargetHeight() * (float) TargetWidth());
-        else
-            params.cameraFovAngleVertical = 1.0471975511966f;
-    }
-
-    if (!Config::Instance()->FsrUseFsrInputValues.value_or_default() ||
-        InParameters->Get("FSR.frameTimeDelta", &params.frameTimeDelta) != NVSDK_NGX_Result_Success)
-    {
-        if (InParameters->Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &params.frameTimeDelta) !=
-                NVSDK_NGX_Result_Success ||
-            params.frameTimeDelta < 1.0f)
-            params.frameTimeDelta = (float) GetDeltaTime();
-    }
-
-    LOG_DEBUG("FrameTimeDeltaInMsec: {0}", params.frameTimeDelta);
-
-    if (!Config::Instance()->FsrUseFsrInputValues.value_or_default() ||
-        InParameters->Get("FSR.viewSpaceToMetersFactor", &params.viewSpaceToMetersFactor) != NVSDK_NGX_Result_Success)
-        params.viewSpaceToMetersFactor = 0.0f;
-
-    if (InParameters->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &params.preExposure) != NVSDK_NGX_Result_Success)
-        params.preExposure = 1.0f;
-
-    if (Version() >= feature_version { 3, 1, 1 } && _velocity != Config::Instance()->FsrVelocity.value_or_default())
-    {
-        _velocity = Config::Instance()->FsrVelocity.value_or_default();
-        ffxConfigureDescUpscaleKeyValue m_upscalerKeyValueConfig {};
-        m_upscalerKeyValueConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
-        m_upscalerKeyValueConfig.key = FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR;
-        m_upscalerKeyValueConfig.ptr = &_velocity;
-        auto result = FfxApiProxy::D3D12_Configure(&_context, &m_upscalerKeyValueConfig.header);
-
-        if (result != FFX_API_RETURN_OK)
-            LOG_WARN("Velocity configure result: {}", (UINT) result);
-    }
-
-    if (Version() >= feature_version { 3, 1, 4 })
-    {
-        if (_reactiveScale != Config::Instance()->FsrReactiveScale.value_or_default())
-        {
-            _reactiveScale = Config::Instance()->FsrReactiveScale.value_or_default();
-            ffxConfigureDescUpscaleKeyValue m_upscalerKeyValueConfig {};
-            m_upscalerKeyValueConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
-            m_upscalerKeyValueConfig.key = FFX_API_CONFIGURE_UPSCALE_KEY_FREACTIVENESSSCALE;
-            m_upscalerKeyValueConfig.ptr = &_reactiveScale;
-            auto result = FfxApiProxy::D3D12_Configure(&_context, &m_upscalerKeyValueConfig.header);
-
-            if (result != FFX_API_RETURN_OK)
-                LOG_WARN("Reactive Scale configure result: {}", (UINT) result);
-        }
-
-        if (_shadingScale != Config::Instance()->FsrShadingScale.value_or_default())
-        {
-            _shadingScale = Config::Instance()->FsrShadingScale.value_or_default();
-            ffxConfigureDescUpscaleKeyValue m_upscalerKeyValueConfig {};
-            m_upscalerKeyValueConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
-            m_upscalerKeyValueConfig.key = FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE;
-            m_upscalerKeyValueConfig.ptr = &_shadingScale;
-            auto result = FfxApiProxy::D3D12_Configure(&_context, &m_upscalerKeyValueConfig.header);
-
-            if (result != FFX_API_RETURN_OK)
-                LOG_WARN("Shading Scale configure result: {}", (UINT) result);
-        }
-
-        if (_accAddPerFrame != Config::Instance()->FsrAccAddPerFrame.value_or_default())
-        {
-            _accAddPerFrame = Config::Instance()->FsrAccAddPerFrame.value_or_default();
-            ffxConfigureDescUpscaleKeyValue m_upscalerKeyValueConfig {};
-            m_upscalerKeyValueConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
-            m_upscalerKeyValueConfig.key = FFX_API_CONFIGURE_UPSCALE_KEY_FACCUMULATIONADDEDPERFRAME;
-            m_upscalerKeyValueConfig.ptr = &_accAddPerFrame;
-            auto result = FfxApiProxy::D3D12_Configure(&_context, &m_upscalerKeyValueConfig.header);
-
-            if (result != FFX_API_RETURN_OK)
-                LOG_WARN("Acc. Add Per Frame configure result: {}", (UINT) result);
-        }
-
-        if (_minDisOccAcc != Config::Instance()->FsrMinDisOccAcc.value_or_default())
-        {
-            _minDisOccAcc = Config::Instance()->FsrMinDisOccAcc.value_or_default();
-            ffxConfigureDescUpscaleKeyValue m_upscalerKeyValueConfig {};
-            m_upscalerKeyValueConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
-            m_upscalerKeyValueConfig.key = FFX_API_CONFIGURE_UPSCALE_KEY_FMINDISOCCLUSIONACCUMULATION;
-            m_upscalerKeyValueConfig.ptr = &_minDisOccAcc;
-            auto result = FfxApiProxy::D3D12_Configure(&_context, &m_upscalerKeyValueConfig.header);
-
-            if (result != FFX_API_RETURN_OK)
-                LOG_WARN("Minimum Disocclusion Acc. configure result: {}", (UINT) result);
-        }
-    }
-
-    if (InParameters->Get("FSR.upscaleSize.width", &params.upscaleSize.width) == NVSDK_NGX_Result_Success &&
-        Config::Instance()->OutputScalingEnabled.value_or_default())
-    {
-        auto originalWidth = static_cast<float>(params.upscaleSize.width);
-        params.upscaleSize.width =
-            static_cast<uint32_t>(originalWidth * Config::Instance()->OutputScalingMultiplier.value_or_default());
-    }
-    else if (params.upscaleSize.width == 0)
-    {
-        params.upscaleSize.width = TargetWidth();
-    }
-
-    if (InParameters->Get("FSR.upscaleSize.height", &params.upscaleSize.height) == NVSDK_NGX_Result_Success &&
-        Config::Instance()->OutputScalingEnabled.value_or_default())
-    {
-        auto originalHeight = static_cast<float>(params.upscaleSize.height);
-        params.upscaleSize.height =
-            static_cast<uint32_t>(originalHeight * Config::Instance()->OutputScalingMultiplier.value_or_default());
-    }
-    else if (params.upscaleSize.height == 0)
-    {
-        params.upscaleSize.height = TargetHeight();
-    }
-
-    LOG_DEBUG("Dispatch!!");
-    auto result = FfxApiProxy::D3D12_Dispatch(&_context, &params.header);
-
-    if (result != FFX_API_RETURN_OK)
-    {
-        LOG_ERROR("_dispatch error: {0}", FfxApiProxy::ReturnCodeToString(result));
-
-        if (result == FFX_API_RETURN_ERROR_RUNTIME_ERROR)
-        {
-            LOG_WARN("Trying to recover by recreating the feature");
-            State::Instance().changeBackend[Handle()->Id] = true;
-        }
-
-        return false;
-    }
-
-    // apply rcas
-    if (Config::Instance()->RcasEnabled.value_or_default() &&
-        (_sharpness > 0.0f || (Config::Instance()->MotionSharpnessEnabled.value_or_default() &&
-                               Config::Instance()->MotionSharpness.value_or_default() > 0.0f)) &&
-        RCAS->CanRender())
-    {
-        if (params.output.resource != RCAS->Buffer())
-            ResourceBarrier(InCommandList, (ID3D12Resource*) params.output.resource,
-                            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        RcasConstants rcasConstants {};
-
-        rcasConstants.Sharpness = _sharpness;
-        InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_X, &rcasConstants.MvScaleX);
-        InParameters->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &rcasConstants.MvScaleY);
-
-        if (DepthInverted())
-        {
-            rcasConstants.CameraNear = params.cameraFar;
-            rcasConstants.CameraFar = params.cameraNear;
-        }
-        else
-        {
-            rcasConstants.CameraNear = params.cameraNear;
-            rcasConstants.CameraFar = params.cameraFar;
-        }
-
-        if (useSS)
-        {
-            if (!RCAS->Dispatch(Device, InCommandList, (ID3D12Resource*) params.output.resource,
-                                (ID3D12Resource*) params.motionVectors.resource, rcasConstants, OutputScaler->Buffer(),
-                                (ID3D12Resource*) params.depth.resource))
-            {
-                Config::Instance()->RcasEnabled.set_volatile_value(false);
-                return true;
-            }
-        }
-        else
-        {
-            if (!RCAS->Dispatch(Device, InCommandList, (ID3D12Resource*) params.output.resource,
-                                (ID3D12Resource*) params.motionVectors.resource, rcasConstants, paramOutput,
-                                (ID3D12Resource*) params.depth.resource))
-            {
-                Config::Instance()->RcasEnabled.set_volatile_value(false);
-                return true;
-            }
-        }
-    }
-
-    if (useSS)
-    {
-        LOG_DEBUG("scaling output...");
-        OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        if (!OutputScaler->Dispatch(Device, InCommandList, OutputScaler->Buffer(), paramOutput))
-        {
-            Config::Instance()->OutputScalingEnabled.set_volatile_value(false);
-            State::Instance().changeBackend[Handle()->Id] = true;
-            return true;
-        }
-    }
-
-    // imgui
-    if (!Config::Instance()->OverlayMenu.value_or_default() && _frameCount > 30)
-    {
-        if (Imgui != nullptr && Imgui.get() != nullptr)
-        {
-            if (Imgui->IsHandleDifferent())
-            {
-                Imgui.reset();
-            }
-            else
-                Imgui->Render(InCommandList, paramOutput);
-        }
-        else
-        {
-            if (Imgui == nullptr || Imgui.get() == nullptr)
-                Imgui = std::make_unique<Menu_Dx12>(GetForegroundWindow(), Device);
-        }
-    }
-
-    // restore resource states
-    if (paramColor && Config::Instance()->ColorResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramColor, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value());
-
-    if (paramVelocity && Config::Instance()->MVResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramVelocity, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->MVResourceBarrier.value());
-
-    if (paramOutput && Config::Instance()->OutputResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->OutputResourceBarrier.value());
-
-    if (paramDepth && Config::Instance()->DepthResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->DepthResourceBarrier.value());
-
-    if (paramExp && Config::Instance()->ExposureResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramExp, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->ExposureResourceBarrier.value());
-
-    if (paramReactiveMask && Config::Instance()->MaskResourceBarrier.has_value())
-        ResourceBarrier(InCommandList, paramReactiveMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        (D3D12_RESOURCE_STATES) Config::Instance()->MaskResourceBarrier.value());
-
-    _frameCount++;
-
-    return true;
 }
 
 bool FSR31FeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
@@ -674,183 +144,788 @@ bool FSR31FeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
         return false;
     }
 
-    {
-        ScopedSkipSpoofing skipSpoofing {};
+    if (!CreateUpscalerContext(*InParameters))
+        return false;
 
-        ffxQueryDescGetVersions versionQuery {};
-        versionQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
-        versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-        versionQuery.device = Device; // only for DirectX 12 applications
-        uint64_t versionCount = 0;
-        versionQuery.outputCount = &versionCount;
-        // get number of versions for allocation
-        FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
-
-        State::Instance().ffxUpscalerVersionIds.resize(versionCount);
-        State::Instance().ffxUpscalerVersionNames.resize(versionCount);
-        versionQuery.versionIds = State::Instance().ffxUpscalerVersionIds.data();
-        versionQuery.versionNames = State::Instance().ffxUpscalerVersionNames.data();
-        // fill version ids and names arrays.
-        FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
-
-        _contextDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-
-        _contextDesc.flags = 0;
-
-#ifdef _DEBUG
-        LOG_INFO("Debug checking enabled!");
-        _contextDesc.fpMessage = FfxLogCallback;
-        _contextDesc.flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
-#endif
-
-        if (DepthInverted())
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
-
-        if (AutoExposure())
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
-
-        if (IsHdr())
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
-
-        if (JitteredMV())
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION;
-
-        if (!LowResMV())
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS;
-
-        if (Config::Instance()->FsrNonLinearColorSpace.value_or_default())
-        {
-            _contextDesc.flags |= FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
-            LOG_INFO("contextDesc.initFlags (NonLinearColorSpace) {0:b}", _contextDesc.flags);
-        }
-
-        if (Config::Instance()->Fsr4EnableDebugView.value_or_default())
-        {
-            LOG_INFO("Debug view enabled!");
-            _contextDesc.flags |= 512; // FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION
-        }
-
-        if (Config::Instance()->OutputScalingEnabled.value_or_default() &&
-            (LowResMV() || RenderWidth() == DisplayWidth()))
-        {
-            float ssMulti = Config::Instance()->OutputScalingMultiplier.value_or_default();
-
-            if (ssMulti < 0.5f)
-            {
-                ssMulti = 0.5f;
-                Config::Instance()->OutputScalingMultiplier.set_volatile_value(ssMulti);
-            }
-            else if (ssMulti > 3.0f)
-            {
-                ssMulti = 3.0f;
-                Config::Instance()->OutputScalingMultiplier.set_volatile_value(ssMulti);
-            }
-
-            _targetWidth = static_cast<unsigned int>(DisplayWidth() * ssMulti);
-            _targetHeight = static_cast<unsigned int>(DisplayHeight() * ssMulti);
-        }
-        else
-        {
-            _targetWidth = DisplayWidth();
-            _targetHeight = DisplayHeight();
-        }
-
-        // extended limits changes how resolution
-        if (Config::Instance()->ExtendedLimits.value_or_default() && RenderWidth() > DisplayWidth())
-        {
-            _contextDesc.maxRenderSize.width = RenderWidth();
-            _contextDesc.maxRenderSize.height = RenderHeight();
-
-            Config::Instance()->OutputScalingMultiplier.set_volatile_value(1.0f);
-
-            // if output scaling active let it to handle downsampling
-            if (Config::Instance()->OutputScalingEnabled.value_or_default() &&
-                (LowResMV() || RenderWidth() == DisplayWidth()))
-            {
-                _contextDesc.maxUpscaleSize.width = _contextDesc.maxRenderSize.width;
-                _contextDesc.maxUpscaleSize.height = _contextDesc.maxRenderSize.height;
-
-                // update target res
-                _targetWidth = _contextDesc.maxRenderSize.width;
-                _targetHeight = _contextDesc.maxRenderSize.height;
-            }
-            else
-            {
-                _contextDesc.maxUpscaleSize.width = DisplayWidth();
-                _contextDesc.maxUpscaleSize.height = DisplayHeight();
-            }
-        }
-        else
-        {
-            _contextDesc.maxRenderSize.width = TargetWidth() > DisplayWidth() ? TargetWidth() : DisplayWidth();
-            _contextDesc.maxRenderSize.height = TargetHeight() > DisplayHeight() ? TargetHeight() : DisplayHeight();
-            _contextDesc.maxUpscaleSize.width = TargetWidth();
-            _contextDesc.maxUpscaleSize.height = TargetHeight();
-        }
-
-        // Set stability values as default if not set by user
-        {
-            auto config = Config::Instance();
-            auto const scaleRatioX = (float) TargetWidth() / (float) RenderWidth();
-            auto const scaleRatioY = (float) TargetHeight() / (float) RenderHeight();
-            auto const scaleRatio = std::max(scaleRatioX, scaleRatioY);
-
-            if (scaleRatio > 0.0f && !std::isinf(scaleRatio))
-            {
-                if (config->FsrVelocity.value_for_config() == std::nullopt)
-                    config->FsrVelocity.set_volatile_value(0.5f);
-
-                if (config->FsrReactiveScale.value_for_config() == std::nullopt)
-                    config->FsrReactiveScale.set_volatile_value(0.25f);
-
-                if (config->FsrShadingScale.value_for_config() == std::nullopt)
-                    config->FsrShadingScale.set_volatile_value(0.5f / scaleRatio);
-
-                if (config->FsrAccAddPerFrame.value_for_config() == std::nullopt)
-                    config->FsrAccAddPerFrame.set_volatile_value(scaleRatio / 10.0f);
-
-                if (config->FsrMinDisOccAcc.value_for_config() == std::nullopt)
-                    config->FsrMinDisOccAcc.set_volatile_value(scaleRatio / 20.0f);
-            }
-        }
-
-        ffxCreateBackendDX12Desc backendDesc = { 0 };
-        backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
-        backendDesc.device = Device;
-
-        _contextDesc.header.pNext = &backendDesc.header;
-
-        if (Config::Instance()->FfxUpscalerIndex.value_or_default() < 0 ||
-            Config::Instance()->FfxUpscalerIndex.value_or_default() >= State::Instance().ffxUpscalerVersionIds.size())
-            Config::Instance()->FfxUpscalerIndex.set_volatile_value(0);
-
-        ffxOverrideVersion override = { 0 };
-        override.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
-        override.versionId =
-            State::Instance().ffxUpscalerVersionIds[Config::Instance()->FfxUpscalerIndex.value_or_default()];
-        backendDesc.header.pNext = &override.header;
-
-        LOG_DEBUG("_createContext!");
-
-        {
-            ScopedSkipHeapCapture skipHeapCapture {};
-
-            auto ret = FfxApiProxy::D3D12_CreateContext(&_context, &_contextDesc.header, NULL);
-
-            if (ret != FFX_API_RETURN_OK)
-            {
-                LOG_ERROR("_createContext error: {0}", FfxApiProxy::ReturnCodeToString(ret));
-                return false;
-            }
-        }
-
-        auto version =
-            State::Instance().ffxUpscalerVersionNames[Config::Instance()->FfxUpscalerIndex.value_or_default()];
-        _name = "FSR";
-        parse_version(version);
-    }
+    // Update version info for UI/Logging
+    auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+    auto version = state.ffxUpscalerVersionNames[cfg.FfxUpscalerIndex.value_or_default()];
+    _name = "FSR";
+    parse_version(version);
 
     SetInit(true);
 
     return true;
+}
+
+bool FSR31FeatureDx12::CreateUpscalerContext(const NVSDK_NGX_Parameter& ngxParams) 
+{
+    // Get available versions for overrides
+    if (!QueryUpscalerVersions())
+        return false;
+    
+    ffxOverrideVersion vidOverride = 
+    {
+        .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
+        .versionId = GetUpscalerOverrideID()
+    };      
+    // Backend desc
+    ffxCreateBackendDX12Desc backendDesc = 
+    { 
+        .header = 
+        { 
+            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12,
+            .pNext = &vidOverride.header // Chain: Backend -> Override
+        },
+        .device = Device
+    };
+    ffxCreateContextDescUpscaleVersion contextVersion = 
+    {
+        .header = 
+        { 
+            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION,
+            .pNext = &backendDesc.header
+        },
+        .version = FFX_UPSCALER_VERSION
+    };
+    // Chain: Context -> Version -> Backend -> Override
+    _upscaleCtxDesc = 
+    {
+        .header = 
+        {
+            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE,
+            .pNext = &contextVersion.header 
+        }
+    };
+
+    // Context description
+    ConfigureUpscalerContext(ngxParams);
+
+    LOG_DEBUG("_upscaleCtx!");
+
+    {
+        ScopedSkipHeapCapture skipHeapCapture {};
+
+        // Final Context Creation
+        auto ret = FfxApiProxy::D3D12_CreateContext(&_upscaleCtx, &_upscaleCtxDesc.header, NULL);
+
+        if (ret != FFX_API_RETURN_OK)
+        {
+            LOG_ERROR("_upscaleCtx error: {0}", FfxApiProxy::ReturnCodeToString(ret));
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void FSR31FeatureDx12::ConfigureUpscalerContext(const NVSDK_NGX_Parameter& ngxParams)
+{
+    auto& cfg = *Config::Instance();
+
+    // Init context descriptor
+    _upscaleCtxDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+    _upscaleCtxDesc.flags = 0;
+
+#ifdef _DEBUG
+    LOG_INFO("Debug checking enabled!");
+    _upscaleCtxDesc.fpMessage = FfxLogCallback;
+    _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
+#endif
+
+    // Map NGX flags to FFX context flags
+    if (DepthInverted())
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
+
+    if (AutoExposure())
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+
+    if (IsHdr())
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
+
+    if (JitteredMV())
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION;
+
+    if (!LowResMV())
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS;
+
+    // Configurable flags (User overrides)
+    if (cfg.FsrNonLinearColorSpace.value_or_default())
+    {
+        _upscaleCtxDesc.flags |= FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
+        LOG_INFO("contextDesc.initFlags (NonLinearColorSpace) {0:b}", _upscaleCtxDesc.flags);
+    }
+
+    if (cfg.Fsr4EnableDebugView.value_or_default())
+    {
+        LOG_INFO("Debug view enabled!");
+        _upscaleCtxDesc.flags |= 512; // FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION;
+    }
+
+    SetResolutionConfig();
+}
+
+void FSR31FeatureDx12::SetResolutionConfig() 
+{
+    auto& cfg = *Config::Instance();
+
+    // Handle Output Scaling Multiplier (Manual resizing of the output)
+    if (cfg.OutputScalingEnabled.value_or_default() && LowResMV())
+    {
+        const float ssMulti = std::clamp(cfg.OutputScalingMultiplier.value_or_default(), 0.5f, 3.0f);
+        cfg.OutputScalingMultiplier.set_volatile_value(ssMulti);
+
+        _targetWidth = static_cast<uint32_t>(DisplayWidth() * ssMulti);
+        _targetHeight = static_cast<uint32_t>(DisplayHeight() * ssMulti);
+    }
+    else
+    {
+        _targetWidth = DisplayWidth();
+        _targetHeight = DisplayHeight();
+    }
+
+    // Extended limits: Support rendering at higher than display resolution
+    if (cfg.ExtendedLimits.value_or_default() && RenderWidth() > DisplayWidth())
+    {
+        _upscaleCtxDesc.maxRenderSize.width = RenderWidth();
+        _upscaleCtxDesc.maxRenderSize.height = RenderHeight();
+
+        cfg.OutputScalingMultiplier.set_volatile_value(1.0f);
+
+        // If output scaling active, let it handle downsampling
+        if (cfg.OutputScalingEnabled.value_or_default() && LowResMV())
+        {
+            _upscaleCtxDesc.maxUpscaleSize.width = _upscaleCtxDesc.maxRenderSize.width;
+            _upscaleCtxDesc.maxUpscaleSize.height = _upscaleCtxDesc.maxRenderSize.height;
+
+            // update target res
+            _targetWidth = _upscaleCtxDesc.maxRenderSize.width;
+            _targetHeight = _upscaleCtxDesc.maxRenderSize.height;
+        }
+        else
+        {
+            _upscaleCtxDesc.maxUpscaleSize.width = DisplayWidth();
+            _upscaleCtxDesc.maxUpscaleSize.height = DisplayHeight();
+        }
+    }
+    else
+    {
+        _upscaleCtxDesc.maxRenderSize.width = TargetWidth() > DisplayWidth() ? TargetWidth() : DisplayWidth();
+        _upscaleCtxDesc.maxRenderSize.height = TargetHeight() > DisplayHeight() ? TargetHeight() : DisplayHeight();
+        _upscaleCtxDesc.maxUpscaleSize.width = TargetWidth();
+        _upscaleCtxDesc.maxUpscaleSize.height = TargetHeight();
+    }
+}
+
+bool FSR31FeatureDx12::QueryUpscalerVersions()
+{
+    ScopedSkipSpoofing skipSpoofing {};
+
+    auto& state = State::Instance();
+
+    // Get available FSR versions from the proxy
+    ffxQueryDescGetVersions versionQuery {};
+    versionQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+    versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+    versionQuery.device = Device; // only for DirectX 12 applications
+
+    // Get number of versions for allocation
+    uint64_t versionCount = 0;
+    versionQuery.outputCount = &versionCount;
+
+    FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
+
+    // Store available FSR version IDs and names in vectors
+    state.ffxUpscalerVersionIds.resize(versionCount);
+    state.ffxUpscalerVersionNames.resize(versionCount);
+    versionQuery.versionIds = state.ffxUpscalerVersionIds.data();
+    versionQuery.versionNames = state.ffxUpscalerVersionNames.data();
+    FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
+
+    return versionCount > 0;
+}
+
+uint64_t FSR31FeatureDx12::GetUpscalerOverrideID()
+{
+    auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+
+    // Select specific FSR version based on user config index
+    if (cfg.FfxUpscalerIndex.value_or_default() < 0 ||
+        cfg.FfxUpscalerIndex.value_or_default() >= state.ffxUpscalerVersionIds.size())
+        cfg.FfxUpscalerIndex.set_volatile_value(0);
+
+    return state.ffxUpscalerVersionIds[cfg.FfxUpscalerIndex.value_or_default()];
+}
+
+bool FSR31FeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+{
+    LOG_FUNC();
+
+    if (!IsInited())
+        return false;
+
+    auto& cfg = *Config::Instance();
+    const auto& inParams = *InParameters;
+
+    // Validate helper features
+    if (!RCAS->IsInit())
+        cfg.RcasEnabled.set_volatile_value(false);
+    if (!OutputScaler->IsInit())
+        cfg.OutputScalingEnabled.set_volatile_value(false);
+
+    _isInReset = false;
+
+    if (uint32_t value = 0; inParams.Get(NVSDK_NGX_Parameter_Reset, &value) == NVSDK_NGX_Result_Success)
+        _isInReset = value == 1;
+
+    // Resource Gathering
+    ffxDispatchDescUpscale upscalerDesc = {};
+
+    if (!PrepareUpscalerInput(InCommandList, inParams, upscalerDesc)) 
+        return false;
+
+    // Sets optional, configurable resource barriers
+    SetConfigurableBarriers(InCommandList);
+
+    bool isUpscalerReady = DispatchUpscaler(InCommandList, upscalerDesc);
+
+    // Post-Process
+    if (isUpscalerReady)
+        PostProcess(InCommandList, inParams);
+
+    // Cleanup
+    ResetConfigurableBarriers(InCommandList);
+
+    _frameCount++;
+    return isUpscalerReady;
+}
+
+bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommandList,
+                                            const NVSDK_NGX_Parameter& inParams, ffxDispatchDescUpscale& upscalerDesc)
+{
+    auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+
+    _inputBuffers = {};
+
+    ConfigureUpscaler(inParams, upscalerDesc);
+
+    // Resolve Output Chain (Main -> Scaler -> RCAS)
+    // Track the resource FSR writes into
+    if (!SetUpscalerTarget(InCommandList, inParams))
+        return false;
+
+    // Main inputs
+    if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Color, _inputBuffers.Color))
+        return false;
+    if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_MotionVectors, _inputBuffers.MotionVectors))
+        return false;
+    if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Depth, _inputBuffers.Depth) && LowResMV())
+        return false;
+
+    // Optional Resources
+    TryGetNGXVoidPointer(inParams, OptiKeys::FSR_TransparencyAndComp, _inputBuffers.TransparencyMask);
+    TryGetNGXVoidPointer(inParams, OptiKeys::FSR_Reactive, _inputBuffers.ReactiveMask);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
+                         _inputBuffers.DlssBiasMaskFallback);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_ExposureTexture, _inputBuffers.ExposureMap);
+
+    // If not AutoExposure, we must have an exposure texture. If missing, force AutoExposure reset.
+    if (!AutoExposure() && !_inputBuffers.ExposureMap)
+    {
+        LOG_DEBUG("AutoExposure disabled but ExposureTexture is missing. Forcing AutoExposure and re-initializing.");
+        state.AutoExposure = true;
+        state.changeBackend[Handle()->Id] = true;
+        return true;
+    }
+
+    // Resolve Reactive & Transparency Masks
+    GetReactiveAndTransparencyMasks(InCommandList, _inputBuffers);
+
+    // Map inputs to descriptor
+    upscalerDesc.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+    upscalerDesc.commandList = InCommandList;
+
+    // Mandatory Inputs
+    upscalerDesc.color = ffxApiGetResourceDX12(_inputBuffers.Color, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    upscalerDesc.motionVectors =
+        ffxApiGetResourceDX12(_inputBuffers.MotionVectors, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    upscalerDesc.depth = ffxApiGetResourceDX12(_inputBuffers.Depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+
+    // Output
+    upscalerDesc.output = ffxApiGetResourceDX12(_upscalerOutput, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    // Reactive / Transparency
+    if (_inputBuffers.ReactiveMask)
+    {
+        LOG_DEBUG("Assigning Reactive Mask");
+        upscalerDesc.reactive = ffxApiGetResourceDX12(_inputBuffers.ReactiveMask, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    }
+
+    if (_inputBuffers.TransparencyMask)
+    {
+        LOG_DEBUG("Assigning Transparency Mask");
+        upscalerDesc.transparencyAndComposition =
+            ffxApiGetResourceDX12(_inputBuffers.TransparencyMask, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    }
+
+    // Exposure
+    if (AutoExposure())
+        LOG_DEBUG("Using AutoExposure");
+    else if (_inputBuffers.ExposureMap)
+    {
+        LOG_DEBUG("Using Exposure Texture");
+        upscalerDesc.exposure = ffxApiGetResourceDX12(_inputBuffers.ExposureMap, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    }
+
+    // State Tracking / Debug
+    _hasColor = upscalerDesc.color.resource != nullptr;
+    _hasDepth = upscalerDesc.depth.resource != nullptr;
+    _hasMV = upscalerDesc.motionVectors.resource != nullptr;
+    _hasExposure = upscalerDesc.exposure.resource != nullptr;
+    _hasTM = upscalerDesc.transparencyAndComposition.resource != nullptr;
+    _accessToReactiveMask = _inputBuffers.ReactiveMask != nullptr; // Keep original logic tracking if "native" mask existed
+    _hasOutput = upscalerDesc.output.resource != nullptr;
+
+    // FSR 4 Format Fixes
+    if (Version().major >= 4)
+    {
+        ffxResolveTypelessFormat(upscalerDesc.color.description.format);
+        ffxResolveTypelessFormat(upscalerDesc.depth.description.format);
+        ffxResolveTypelessFormat(upscalerDesc.motionVectors.description.format);
+        ffxResolveTypelessFormat(upscalerDesc.exposure.description.format);
+        ffxResolveTypelessFormat(upscalerDesc.transparencyAndComposition.description.format);
+        ffxResolveTypelessFormat(upscalerDesc.output.description.format);
+    }    
+
+    return true;
+}
+
+bool FSR31FeatureDx12::SetUpscalerTarget(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams)
+{
+    const auto& cfg = *Config::Instance();
+    _upscalerOutput = nullptr;
+    _mainOutput = nullptr;
+
+    if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Output, _mainOutput))
+        return false;
+
+    const bool isMotionSharpeningSet =
+        (cfg.MotionSharpnessEnabled.value_or_default() && cfg.MotionSharpness.value_or_default() > 0.0f);
+
+    _isSuperScaling = cfg.OutputScalingEnabled.value_or_default() && LowResMV();
+    _isSharpening = cfg.RcasEnabled.value_or_default() && (_sharpness > 0.0f || isMotionSharpeningSet);
+    _upscalerOutput = _mainOutput;
+
+    // If super scaling, swap in OutputScaler buffer
+    if (_isSuperScaling)
+    {
+        if (OutputScaler->CreateBufferResource(Device, _mainOutput, TargetWidth(), TargetHeight(),
+                                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+        {
+            OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            _upscalerOutput = OutputScaler->Buffer();
+        }
+    }
+
+    // If RCAS is enabled, swap in RCAS buffer (chains with SS if both are enabled)
+    if (_isSharpening && RCAS->IsInit())
+    {
+        if (RCAS->CreateBufferResource(Device, _upscalerOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+        {
+            RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            _upscalerOutput = RCAS->Buffer();
+        }
+    }
+
+    return true;
+}
+
+void FSR31FeatureDx12::ConfigureUpscaler(const NVSDK_NGX_Parameter& inParams, ffxDispatchDescUpscale& upscalerDesc)
+{
+    auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+
+    // Configure Debug Flags
+    // Handle FSR 4.0 specific debug view logic or standard FSR debug flags
+    if (cfg.FsrDebugView.value_or_default() &&
+        (Version() < feature_version { 4, 0, 0 } || cfg.Fsr4EnableDebugView.value_or_default()))
+    {
+        upscalerDesc.flags |= FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW;
+    }
+
+    // Color Space Configuration
+    if (cfg.FsrNonLinearPQ.value_or_default())
+        upscalerDesc.flags |= FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_PQ;
+    else if (cfg.FsrNonLinearSRGB.value_or_default())
+        upscalerDesc.flags |= FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB;
+
+    // Retrieve Jitter Offsets
+    inParams.Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &upscalerDesc.jitterOffset.x);
+    inParams.Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &upscalerDesc.jitterOffset.y);
+
+    LOG_DEBUG("Jitter Offset: {0}x{1}", upscalerDesc.jitterOffset.x, upscalerDesc.jitterOffset.y);
+
+    // Sharpening
+    if (cfg.OverrideSharpness.value_or_default())
+        _sharpness = cfg.Sharpness.value_or_default();
+    else
+        _sharpness = GetSharpness(&inParams);
+
+    // If RCAS is enabled externally, disable FSR built-in sharpening to avoid double sharpening
+    if (cfg.RcasEnabled.value_or_default())
+    {
+        upscalerDesc.enableSharpening = false;
+        upscalerDesc.sharpness = 0.0f;
+    }
+    else
+    {
+        if (_sharpness > 1.0f)
+            _sharpness = 1.0f;
+
+        upscalerDesc.enableSharpening = _sharpness > 0.0f;
+        upscalerDesc.sharpness = _sharpness;
+    }
+
+    // Force enable RCAS when in FSR4 debug view mode
+    // it crashes when sharpening is disabled
+    // Debug view expects RCAS output (not sure why)
+    if (Version() >= feature_version { 4, 0, 2 } && cfg.FsrDebugView.value_or_default() &&
+        cfg.Fsr4EnableDebugView.value_or_default() && !upscalerDesc.enableSharpening)
+    {
+        upscalerDesc.enableSharpening = true;
+        upscalerDesc.sharpness = 0.01f;
+    }
+
+    // Get reset flag
+    upscalerDesc.reset = _isInReset;
+
+    GetRenderResolution(&inParams, &upscalerDesc.renderSize.width, &upscalerDesc.renderSize.height);
+    LOG_DEBUG("Input Resolution: {0}x{1}", upscalerDesc.renderSize.width, upscalerDesc.renderSize.height);
+
+    // Motion Vector Scaling
+    float MVScaleX = 1.0f;
+    float MVScaleY = 1.0f;
+
+    if (inParams.Get(NVSDK_NGX_Parameter_MV_Scale_X, &MVScaleX) == NVSDK_NGX_Result_Success &&
+        inParams.Get(NVSDK_NGX_Parameter_MV_Scale_Y, &MVScaleY) == NVSDK_NGX_Result_Success)
+    {
+        upscalerDesc.motionVectorScale.x = MVScaleX;
+        upscalerDesc.motionVectorScale.y = MVScaleY;
+    }
+    else
+    {
+        LOG_WARN("Can't get motion vector scales!");
+        upscalerDesc.motionVectorScale.x = MVScaleX;
+        upscalerDesc.motionVectorScale.y = MVScaleY;
+    }
+
+    LOG_DEBUG("Sharpness: {0}", upscalerDesc.sharpness);
+
+    // Camera & View Parameters with fallbacks
+
+    // Not explicitly set in the DLSS path. DLSS assumes near == 0 and far == 1 or the inverse.
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_NearPlane, cfg.FsrUseFsrInputValues, upscalerDesc.cameraNear))
+    {
+        upscalerDesc.cameraNear = cfg.FsrCameraNear.value_or_default();
+    }
+
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_FarPlane, cfg.FsrUseFsrInputValues, upscalerDesc.cameraFar))
+    {
+        upscalerDesc.cameraFar = cfg.FsrCameraFar.value_or_default();
+    }
+
+    // Not being set in DLSS or XeSS input paths. Inverse VP matrices may be deprecated in modern DLSS.
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_CameraFovVertical, cfg.FsrUseFsrInputValues,
+                                  upscalerDesc.cameraFovAngleVertical))
+    {
+        if (cfg.FsrVerticalFov.has_value())
+            upscalerDesc.cameraFovAngleVertical = GetRadiansFromDeg(cfg.FsrVerticalFov.value());
+        else if (cfg.FsrHorizontalFov.value_or_default() > 0.0f)
+        {
+            const float hFovRad = GetRadiansFromDeg(cfg.FsrHorizontalFov.value());
+            upscalerDesc.cameraFovAngleVertical =
+                GetVerticalFovFromHorizontal(hFovRad, (float) TargetWidth(), (float) TargetHeight());
+        }
+        else
+            upscalerDesc.cameraFovAngleVertical = GetRadiansFromDeg(60);
+    }
+
+    // Use game deltatime or fall back to internal measurements
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_FrameTimeDelta, cfg.FsrUseFsrInputValues,
+                                  upscalerDesc.frameTimeDelta))
+    {
+        if (inParams.Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &upscalerDesc.frameTimeDelta) !=
+                NVSDK_NGX_Result_Success ||
+            upscalerDesc.frameTimeDelta < 1.0f)
+        {
+            upscalerDesc.frameTimeDelta = (float) GetDeltaTime();
+        }
+    }
+
+    LOG_DEBUG("FrameTimeDeltaInMsec: {0}", upscalerDesc.frameTimeDelta);
+
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_ViewSpaceToMetersFactor, cfg.FsrUseFsrInputValues,
+                                  upscalerDesc.viewSpaceToMetersFactor))
+    {
+        upscalerDesc.viewSpaceToMetersFactor = 0.0f;
+    }
+
+    upscalerDesc.upscaleSize.width = TargetWidth();
+    upscalerDesc.upscaleSize.height = TargetHeight();
+
+    if (inParams.Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &upscalerDesc.preExposure) != NVSDK_NGX_Result_Success)
+        upscalerDesc.preExposure = 1.0f;
+
+    // FSR 3.1+ Advanced Configuration
+    // Apply volatile configuration keys using FfxApiProxy::D3D12_Configure
+
+    // Velocity Factor (FSR 3.1.1+)
+    if (Version() >= feature_version { 3, 1, 1 })
+    {
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _velocity, cfg.FsrVelocity, FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR,
+                              "Velocity");
+    }
+
+    // Reactiveness, Shading, and Accumulation (FSR 3.1.4+)
+    if (Version() >= feature_version { 3, 1, 4 })
+    {
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _reactiveScale, cfg.FsrReactiveScale,
+                              FFX_API_CONFIGURE_UPSCALE_KEY_FREACTIVENESSSCALE, "Reactive Scale");
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _shadingScale, cfg.FsrShadingScale,
+                              FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE, "Shading Scale");
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _accAddPerFrame, cfg.FsrAccAddPerFrame,
+                              FFX_API_CONFIGURE_UPSCALE_KEY_FACCUMULATIONADDEDPERFRAME, "Acc. Add Per Frame");
+        SetFfxUpscaleKeyValue(&_upscaleCtx, _minDisOccAcc, cfg.FsrMinDisOccAcc,
+                              FFX_API_CONFIGURE_UPSCALE_KEY_FMINDISOCCLUSIONACCUMULATION, "Min Disocclusion Acc.");
+    }
+
+    // Output Scaling Override
+    if (cfg.OutputScalingEnabled.value_or_default())
+    {
+        // If external output scaling is enabled, we may need to adjust the reported upscale size
+        if (inParams.Get(OptiKeys::FSR_UpscaleWidth, &upscalerDesc.upscaleSize.width) == NVSDK_NGX_Result_Success)
+            upscalerDesc.upscaleSize.width *= static_cast<uint32_t>(cfg.OutputScalingMultiplier.value_or_default());
+
+        if (inParams.Get(OptiKeys::FSR_UpscaleHeight, &upscalerDesc.upscaleSize.height) == NVSDK_NGX_Result_Success)
+            upscalerDesc.upscaleSize.height *= static_cast<uint32_t>(cfg.OutputScalingMultiplier.value_or_default());
+    }
+}
+
+bool FSR31FeatureDx12::DispatchUpscaler(ID3D12GraphicsCommandList* InCommandList,
+                                        const ffxDispatchDescUpscale& fsrParams)
+{
+    auto& state = State::Instance();
+
+    LOG_DEBUG("Dispatching FSR...");
+    const ffxReturnCode_t result = FfxApiProxy::D3D12_Dispatch(&_upscaleCtx, &fsrParams.header);
+
+    if (result != FFX_API_RETURN_OK)
+    {
+        LOG_ERROR("_dispatch error: {0}", FfxApiProxy::ReturnCodeToString(result));
+
+        if (result == FFX_API_RETURN_ERROR_RUNTIME_ERROR)
+        {
+            LOG_WARN("Trying to recover by recreating the feature");
+            state.changeBackend[Handle()->Id] = true;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+void FSR31FeatureDx12::PostProcess(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams)
+{
+    auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+
+    // If enabled, RCAS reads from the FSR output and writes to the next stage, either 
+    // the OutputScaler buffer or the final output.
+    if (_isSharpening)
+    {
+        // Transition FSR output for reading by RCAS
+        if (_upscalerOutput != RCAS->Buffer())
+        {
+            ResourceBarrier(InCommandList, _upscalerOutput, 
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+
+        RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        // Configure RCAS
+        RcasConstants rcasConstants 
+        {
+            .Sharpness = _sharpness,
+            .DisplaySizeMV = !LowResMV(),
+            .RenderWidth = (int)RenderWidth(),
+            .RenderHeight = (int)RenderHeight(),
+            .DisplayWidth = (int)TargetWidth(),
+            .DisplayHeight = (int)TargetHeight()
+        };
+
+        inParams.Get(NVSDK_NGX_Parameter_MV_Scale_X, &rcasConstants.MvScaleX);
+        inParams.Get(NVSDK_NGX_Parameter_MV_Scale_Y, &rcasConstants.MvScaleY);
+
+        // Determine RCAS Output Target
+        // If scaling is next, write to the scaler's internal buffer. Otherwise, write to the final app texture.
+        ID3D12Resource* rcasOutput = _isSuperScaling ? OutputScaler->Buffer() : _mainOutput;
+
+        if (!RCAS->Dispatch(Device, InCommandList, _upscalerOutput, _inputBuffers.MotionVectors, rcasConstants,rcasOutput))
+            // Fallback if dispatch fails
+            cfg.RcasEnabled.set_volatile_value(false);
+    }
+
+    // Optional output scaling
+    // Input is always OutputScaler->Buffer() here because:
+    //  If RCAS ran above, it wrote into OutputScaler->Buffer().
+    //  If RCAS did NOT run, Evaluate() configured FSR to write directly into OutputScaler->Buffer().  
+    if (_isSuperScaling)
+    {
+        LOG_DEBUG("Scaling output...");
+        OutputScaler->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        if (!OutputScaler->Dispatch(Device, InCommandList, OutputScaler->Buffer(), _mainOutput))
+        {
+            cfg.OutputScalingEnabled.set_volatile_value(false);
+            state.changeBackend[Handle()->Id] = true;
+            return;
+        }
+    }
+
+    // Composite ImGui overlay
+    if (!cfg.OverlayMenu.value_or_default() && _frameCount > 30)
+    {
+        if (Imgui != nullptr && Imgui.get() != nullptr)
+        {
+            if (Imgui->IsHandleDifferent())
+                Imgui.reset();
+            else
+                Imgui->Render(InCommandList, _mainOutput);
+        }
+        else
+        {
+            if (Imgui == nullptr || Imgui.get() == nullptr)
+                Imgui = std::make_unique<Menu_Dx12>(GetForegroundWindow(), Device);
+        }
+    }
+}
+
+void FSR31FeatureDx12::GetReactiveAndTransparencyMasks(ID3D12GraphicsCommandList* InCommandList, InputResources& inputs)
+{
+    auto& cfg = *Config::Instance();
+    ID3D12Resource* activeReactiveMask = nullptr;
+    ID3D12Resource* activeTransparencyMask = nullptr;
+
+    if (!cfg.DisableReactiveMask.value_or(inputs.ReactiveMask == nullptr && inputs.DlssBiasMaskFallback == nullptr))
+    {
+        // Prefer explicit FSR masks
+        if (inputs.TransparencyMask)
+            activeTransparencyMask = inputs.TransparencyMask;
+        if (inputs.ReactiveMask)
+            activeReactiveMask = inputs.ReactiveMask;
+
+        // Fallback to DLSS Bias mask if FSR reactive is missing
+        if (!activeReactiveMask && inputs.DlssBiasMaskFallback)
+        {
+            LOG_DEBUG("Using DLSS Input Bias mask as fallback...");
+            cfg.DisableReactiveMask.set_volatile_value(false);
+
+            // Transition Bias mask for reading
+            TryResourceBarrier(InCommandList, inputs.DlssBiasMaskFallback, cfg.MaskResourceBarrier,
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+            // Handle Bias generation (Compute Shader)
+            if (cfg.DlssReactiveMaskBias.value_or_default() > 0.0f && Bias->IsInit() && Bias->CanRender())
+            {
+                if (Bias->CreateBufferResource(Device, inputs.DlssBiasMaskFallback,
+                                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+                {
+                    Bias->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+                    if (Bias->Dispatch(Device, InCommandList, inputs.DlssBiasMaskFallback,
+                                       cfg.DlssReactiveMaskBias.value_or_default(), Bias->Buffer()))
+                    {
+                        Bias->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        activeReactiveMask = Bias->Buffer(); // Use the processed bias buffer
+                    }
+                    else
+                    {
+                        LOG_DEBUG("Skipping reactive mask, Bias: {0}, Bias Init: {1}, Bias CanRender: {2}",
+                                  cfg.DlssReactiveMaskBias.value_or_default(), Bias->IsInit(), Bias->CanRender());
+                    }
+                }
+            }
+
+            // Use DLSS mask for Transparency if FSR Transparency is missing and config allows
+            if (!activeTransparencyMask && cfg.FsrUseMaskForTransparency.value_or_default())
+                activeTransparencyMask = inputs.DlssBiasMaskFallback;
+        }
+    }
+
+    inputs.TransparencyMask = activeTransparencyMask;
+    inputs.ReactiveMask = activeReactiveMask;
+}
+
+void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InCommandList) const
+{
+    const auto& state = State::Instance();
+    auto& cfg = *Config::Instance();
+
+    // Handle UE Quirks
+    if (state.NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL || state.gameQuirks & GameQuirk::ForceUnrealEngine)
+    {
+        if (!cfg.ColorResourceBarrier.has_value())
+            cfg.ColorResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+        if (!cfg.MVResourceBarrier.has_value())
+            cfg.MVResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
+
+    // Transition FSR inputs to SRVs for reading
+    TryResourceBarrier(InCommandList, _inputBuffers.Color, cfg.ColorResourceBarrier,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, cfg.MVResourceBarrier,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    TryResourceBarrier(InCommandList, _inputBuffers.Depth, cfg.DepthResourceBarrier,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    if (_inputBuffers.ExposureMap && !AutoExposure())
+        TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, cfg.ExposureResourceBarrier,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Transition output to UAV for writing
+    TryResourceBarrier(InCommandList, _mainOutput, cfg.OutputResourceBarrier, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+
+void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCommandList) const
+{
+    const auto& cfg = *Config::Instance();
+
+    // Restore Barriers
+    TryResourceBarrier(InCommandList, _inputBuffers.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       cfg.ColorResourceBarrier);
+    TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       cfg.MVResourceBarrier);
+    TryResourceBarrier(InCommandList, _inputBuffers.Depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       cfg.DepthResourceBarrier);
+    TryResourceBarrier(InCommandList, _mainOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, cfg.OutputResourceBarrier);
+
+    if (_inputBuffers.ExposureMap)
+        TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                           cfg.ExposureResourceBarrier);
+
+    // Note: The original code only restored the reactive mask if it was the fallback dlss mask,
+    // but generally restoring the native mask state is safer if we transitioned it.
+    // Assuming original behavior for now:
+    TryResourceBarrier(InCommandList, _inputBuffers.ReactiveMask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       cfg.MaskResourceBarrier);
+
+    if (_inputBuffers.DlssBiasMaskFallback) // Restore fallback if it was used
+        TryResourceBarrier(InCommandList, _inputBuffers.DlssBiasMaskFallback,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, cfg.MaskResourceBarrier);
 }
