@@ -41,8 +41,7 @@
 #define FLAGS_DEBUG_OUT_NORM_DOT_VIEW   (15 << 17 | FLAGS_DEBUG)
 #define FLAGS_DEBUG_OUT_METALICITY      (16 << 17 | FLAGS_DEBUG)
 
-#define FLAGS_DEBUG_EDGE_MASK       (17 << 17 | FLAGS_DEBUG)
-#define FLAGS_DEBUG_COLOR_MASK      (18 << 17 | FLAGS_DEBUG)
+#define FLAGS_DEBUG_COLOR_MASK      (17 << 17 | FLAGS_DEBUG)
 
 // DLSS-RR Inputs
 Texture2D<float4> InColor : register(t0); // RGB - NVSDK_NGX_Parameter_Color
@@ -145,8 +144,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
     // Depth delta calculation from denoiser prepass sample shader
     // Assuming hardware depth
     const float inDepth = InDepth[px];
-    const float3 ndcPos = float3(UVToNDC(uv), inDepth);
-    float3 viewSpacePos = InvProjectPosition(ndcPos, InvProjMatrix);
+    float3 viewSpacePos = InvProjectPosition(float3(uv, inDepth), InvProjMatrix);
     viewSpacePos.z = clamp(zSign * viewSpacePos.z, NearPlane, FarPlane);
     
     // Left handed view space
@@ -154,10 +152,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
     
     // Color and albedo gradient analysis
     // Prepare rough color luma
-    const float3 color = InColor[px].rgb;
-    float4 specAlbedo = float4(InSpecularAlbedo[px] + 0.01f, 0.0f);
-    float4 diffAlbedo = float4(InDiffuseAlbedo[px] + 0.01f, 0.0f);
-    float4 fusedAlbedo = float4(max(specAlbedo.rgb, diffAlbedo.rgb), 0.0f);
+    const float3 color = GetSafeFP16(InColor[px].rgb);
     
     const float isEdge = AnalyzeEdges(px, color);
     const float transparencyBias = InBiasMask[px];
@@ -170,7 +165,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
         //
         // [TODO!] DLSS-RR normals may be in view or world space. They will need to be transformed to account
         // for both configurations. Cyberpunk happens to use world normals, thankfully.
-        float4 worldSurfaceNormal = InNormals[px];
+        float4 worldSurfaceNormal = InNormals[px];        
         const float2 octNormal = OctahedralEncode(worldSurfaceNormal.rgb);
         const float materialType = 0.0f;
     
@@ -199,12 +194,16 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
         //
         const float3 cameraPos = float3(InvViewMatrix._m03, InvViewMatrix._m13, InvViewMatrix._m23);
         // Line from camera to the clip pos
-        const float3 viewDir = normalize(cameraPos - worldSpacePos);
-        const float NoV = saturate(dot(worldSurfaceNormal.rgb, viewDir));
+        const float3 toCameraDir = normalize(cameraPos - worldSpacePos);
+        const float NoV = saturate(dot(worldSurfaceNormal.rgb, toCameraDir));
 
         // Secondary albedo packing
         //
         // FSR-RR expects metalness in diffuse alpha
+        float4 specAlbedo = float4(InSpecularAlbedo[px] + 0.01f, 0.0f);
+        float4 diffAlbedo = float4(InDiffuseAlbedo[px] + 0.01f, 0.0f);
+        float4 fusedAlbedo = float4(max(specAlbedo.rgb, diffAlbedo.rgb), 0.0f);
+
         const float metalness = EstimateMetalness(diffAlbedo.rgb, specAlbedo.rgb);
         specAlbedo.a = NoV;
         diffAlbedo.a = metalness;  
@@ -239,7 +238,7 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
         [branch]
         if (!IsSet(FLAGS_DEBUG))
         {
-            OutRadiance[px] = float4(demodColor, hitDist);
+            OutRadiance[px] = GetSafeFP16(float4(demodColor, hitDist));
         }
         else
         {
@@ -312,13 +311,9 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 gID : SV_GroupThreadID)
                 case FLAGS_DEBUG_OUT_DIFF_ALBEDO:
                     debugColor = diffAlbedo.rgb;
                     break;
-                
-                case FLAGS_DEBUG_EDGE_MASK:
-                    debugColor = isEdge;
-                    break;
 
                 case FLAGS_DEBUG_COLOR_MASK:
-                    debugColor = transparencyMask;
+                    debugColor = transparencyMask > 0.5f;
                     break;
                 
                 default:
