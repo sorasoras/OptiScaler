@@ -424,7 +424,8 @@ class Config
 
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
-    CustomOptional<uint32_t> FfxDenoiserDebugMode { 0 };
+    CustomOptional<int> FfxDenoiserMode { 0 };
+    CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };
 
     CustomOptional<float> FfxDenoiserHistRejection { 1.0f };
     CustomOptional<float> FfxDenoiserCrossBlNormStr { 1.0f };

@@ -1,3 +1,12 @@
+static const float GaussWeights[5][5] =
+{
+    { 0.000841, 0.006815, 0.013659, 0.006815, 0.000841 },
+    { 0.006815, 0.055225, 0.110685, 0.055225, 0.006815 },
+    { 0.013659, 0.110685, 0.221841, 0.110685, 0.013659 },
+    { 0.006815, 0.055225, 0.110685, 0.055225, 0.006815 },
+    { 0.000841, 0.006815, 0.013659, 0.006815, 0.000841 }
+};
+
 // Octahedral Encoding from AMD FSR-RR sample
 float2 OctahedralEncode(float3 N)
 {
@@ -100,4 +109,24 @@ float3 VisualizeSignedDiff(float val, float scale)
     // Red for negative, green for positive, black for zero
     float v = val * scale;
     return float3(saturate(-v), saturate(v), 0.0f);
+}
+
+half4 GetSafeFP16(float4 v)
+{
+    return (half4) min(max(v, 0.0f), 65500.0f);
+}
+
+half3 GetSafeFP16(float3 v)
+{
+    return (half3) min(max(v, 0.0f), 65500.0f);
+}
+
+float Square(float x)
+{
+    return x * x;
+}
+
+float GetLuminance(float3 color)
+{
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
