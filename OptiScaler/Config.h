@@ -205,7 +205,7 @@ class Config
     CustomOptional<bool> LogToNGX { false };
     CustomOptional<bool> OpenConsole { false };
     CustomOptional<bool> DebugWait { false }; // not in ini
-    CustomOptional<int> LogLevel { 0 };
+    CustomOptional<int> LogLevel { 1 };
     CustomOptional<std::wstring> LogFileName { L"OptiScaler.log" };
     CustomOptional<bool> LogSingleFile { true };
     CustomOptional<bool> LogAsync { false };
@@ -215,9 +215,14 @@ class Config
     CustomOptional<bool> BuildPipelines { true };
     CustomOptional<int32_t> NetworkModel { 0 };
     CustomOptional<bool> CreateHeaps { true };
+    CustomOptional<std::wstring, NoDefault> XeSSLibrary;
+    CustomOptional<std::wstring, NoDefault> XeSSDx11Library;
 
     // DLSS
     CustomOptional<bool> DLSSEnabled { true };
+    CustomOptional<std::wstring, NoDefault> NvngxPath;
+    CustomOptional<std::wstring, NoDefault> NVNGX_DLSS_Library;
+    CustomOptional<std::wstring, NoDefault> DLSSFeaturePath;
     CustomOptional<bool> RenderPresetOverride { false };
     CustomOptional<uint32_t> RenderPresetForAll { 0 };
     CustomOptional<uint32_t> RenderPresetDLAA { 0 };
@@ -240,48 +245,19 @@ class Config
     // Nukems
     CustomOptional<bool> MakeDepthCopy { false };
 
-    // Libraries
-    CustomOptional<std::wstring, NoDefault> MainDllPath;
-    CustomOptional<std::wstring, NoDefault> FfxDx12Path;
-    CustomOptional<std::wstring, NoDefault> FfxDx12SRPath;
-    CustomOptional<std::wstring, NoDefault> FfxDx12FGPath;
-    CustomOptional<std::wstring, NoDefault> FfxDx12RRPath;
-    CustomOptional<std::wstring, NoDefault> FfxDx12RCPath;
-    CustomOptional<std::wstring, NoDefault> FfxVkPath;
-    CustomOptional<std::wstring, NoDefault> XeSSLibrary;
-    CustomOptional<std::wstring, NoDefault> XeFGLibrary;
-    CustomOptional<std::wstring, NoDefault> XeLLLibrary;
-    CustomOptional<std::wstring, NoDefault> XeSSDx11Library;
-    CustomOptional<std::wstring, NoDefault> NvngxPath;
-    CustomOptional<std::wstring, NoDefault> NVNGX_DLSS_Library;
-    CustomOptional<std::wstring, NoDefault> DLSSFeaturePath;
-    CustomOptional<std::wstring, NoDefault> NvapiDllPath;
+    // CAS
+    CustomOptional<bool> RcasEnabled { false };
+    CustomOptional<bool> MotionSharpnessEnabled { false };
+    CustomOptional<bool> MotionSharpnessDebug { false };
+    CustomOptional<float> MotionSharpness { 0.4f };
+    CustomOptional<float> MotionThreshold { 0.0f };
+    CustomOptional<float> MotionScaleLimit { 10.0f };
 
     // Sharpness
     CustomOptional<bool> OverrideSharpness { false };
-    CustomOptional<float> Sharpness { 0.4f };
-
-    // CAS
-    CustomOptional<bool> RcasEnabled { false };
-
-    // RCAS
+    CustomOptional<float> Sharpness { 0.3f };
     CustomOptional<bool> ContrastEnabled { false };
-    CustomOptional<float> Contrast { -0.3f };
-
-    // DA Sharpening
-    CustomOptional<bool> UseDepthAwareSharpen { false };
-    CustomOptional<bool> UseDASDepthAwareSharpen { false };
-    CustomOptional<bool> DADepthIsLinear { false };
-    CustomOptional<float, NoDefault> DADepthScale;
-    CustomOptional<float, NoDefault> DADepthBias;
-    CustomOptional<bool, NoDefault> DAClampOutput;
-
-    // MAS
-    CustomOptional<bool> MotionSharpnessEnabled { false };
-    CustomOptional<bool> MotionSharpnessDebug { false };
-    CustomOptional<float> MotionSharpness { 0.2f };
-    CustomOptional<float> MotionThreshold { 0.0f };
-    CustomOptional<float> MotionScaleLimit { 10.0f };
+    CustomOptional<float> Contrast { 0.0f };
 
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
@@ -302,17 +278,8 @@ class Config
     CustomOptional<float, NoDefault> FpsScale; // No value means same as MenuScale
     CustomOptional<bool> UseHQFont { true };
     CustomOptional<bool> DisableSplash { false };
-    CustomOptional<float> FontSize { 14.0f };
     CustomOptional<std::wstring, NoDefault> TTFFontPath;
     CustomOptional<int> FGShortcutKey { VK_END };
-    CustomOptional<bool> LightTheme { false };
-    CustomOptional<float> MenuAccentColorR { 0.00f };
-    CustomOptional<float> MenuAccentColorG { 0.40f };
-    CustomOptional<float> MenuAccentColorB { 0.77f };
-    CustomOptional<float> MenuBGColorR { 0.0f };
-    CustomOptional<float> MenuBGColorG { 0.0f };
-    CustomOptional<float> MenuBGColorB { 0.0f };
-    CustomOptional<float> MenuBGColorA { 0.99f };
 
     // Hooks
     CustomOptional<bool> HookOriginalNvngxOnly { false };
@@ -343,16 +310,12 @@ class Config
         L"idtechlauncher.exe|cefviewwing.exe|ace-setup64.exe|ace-service64.exe|qtwebengineprocess.exe|"
         L"platformprocess.exe|bugsplathd64.exe|bssndrpt64.exe|pspcsdkappmgr.exe|pspcsdkcore.exe|pspcsdkstttts.exe|"
         L"pspcsdktelemetry.exe|pspcsdkui.exe|pspcsdkupdatechecker.exe|pspcsdkvoicechat.exe|pspcsdkwebview.exe|windhawk."
-        L"exe|vscodium.exe|crash_reporter.exe|steamerrorreporter64.exe|crashreportclient.exe|edcefcrashpadprocess.exe|"
-        L"edcefrenderprocess.exe"
+        L"exe|vscodium.exe|crash_reporter.exe|steamerrorreporter64.exe|crashreportclient.exe"
     };
 
     // Hotfixes
     CustomOptional<bool> CheckForUpdate { true };
     CustomOptional<bool> DisableOverlays { false };
-    CustomOptional<bool> ManualInputPolling { false };
-
-    CustomOptional<bool> SimulateWaitableObject { false };
 
     CustomOptional<float, NoDefault> MipmapBiasOverride; // disabled by default
     CustomOptional<bool> MipmapBiasFixedOverride { false };
@@ -370,7 +333,6 @@ class Config
     CustomOptional<int, NoDefault> SkipFirstFrames; // disabled by default
     CustomOptional<bool> RestoreComputeSignature { false };
     CustomOptional<bool> RestoreGraphicSignature { false };
-    CustomOptional<bool> ExtendedStateRestore { false };
 
     CustomOptional<bool> UsePrecompiledShaders { true };
 
@@ -385,12 +347,12 @@ class Config
     CustomOptional<int32_t, NoDefault> MaskResourceBarrier;     // disabled by default
     CustomOptional<int32_t, NoDefault> OutputResourceBarrier;   // disabled by default
 
-    CustomOptional<bool> CreateD3D12DeviceForLuma { false };
+    CustomOptional<bool> DontCreateD3D12DeviceForLuma { false };
 
     // Upscalers
-    CustomOptional<std::string, SoftDefault> Dx11Upscaler { "fsr22" };
-    CustomOptional<std::string, SoftDefault> Dx12Upscaler { "xess" };
-    CustomOptional<std::string, SoftDefault> VulkanUpscaler { "fsr22" };
+    CustomOptional<std::string, SoftDefault> Dx11Upscaler { std::string(OptiKeys::FSR22) };
+    CustomOptional<std::string, SoftDefault> Dx12Upscaler { std::string(OptiKeys::XeSS) };
+    CustomOptional<std::string, SoftDefault> VulkanUpscaler { std::string(OptiKeys::FSR22) };
 
     // Output Scaling
     CustomOptional<bool> OutputScalingEnabled { false };
@@ -402,25 +364,19 @@ class Config
     CustomOptional<int> FfxUpscalerIndex { 0 };
     CustomOptional<int> FfxFGIndex { 0 };
     CustomOptional<bool> FsrUseMaskForTransparency { true };
+    CustomOptional<bool> Fsr4Update { false };
+    CustomOptional<uint32_t, NoDefault> Fsr4Model;
+    CustomOptional<bool> Fsr4EnableDebugView { false };
+    CustomOptional<bool> Fsr4EnableWatermark { false };
     CustomOptional<bool> FsrNonLinearColorSpace { false };
     CustomOptional<bool> FsrNonLinearSRGB { false };
     CustomOptional<bool> FsrNonLinearPQ { false };
     CustomOptional<bool> FsrAgilitySDKUpgrade { false };
-
-    // These default values will be overwritten at upscaler init time with optimized values
     CustomOptional<float> FsrVelocity { 1.0f };
     CustomOptional<float> FsrReactiveScale { 1.0f };
     CustomOptional<float> FsrShadingScale { 1.0f };
     CustomOptional<float> FsrAccAddPerFrame { 0.333f };
     CustomOptional<float> FsrMinDisOccAcc { -0.333f };
-
-    // FSR4
-    CustomOptional<bool> Fsr4Update { false };
-    CustomOptional<bool> Fsr4ForceEnableInt8 { false };
-    CustomOptional<uint32_t, NoDefault> Fsr4Preset;
-    CustomOptional<bool> Fsr4EnableDebugView { false };
-    CustomOptional<bool> Fsr4EnableWatermark { false };
-    CustomOptional<bool> Fsr4DoNotLoadAmdxc64 { false };
 
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
@@ -428,10 +384,10 @@ class Config
     CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };
 
     CustomOptional<float> FfxDenoiserHistRejection { 1.0f };
-    CustomOptional<float> FfxDenoiserCrossBlNormStr { 1.0f };
-    CustomOptional<float> FfxDenoiserStabilityBias { 0.4f };
-    CustomOptional<float> FfxDenoiserMaxRadiance { 1e4f };
-    CustomOptional<float> FfxDenoiserRadianceClip { 20.0f };
+    CustomOptional<float> FfxDenoiserCrossBlNormStr { 0.7f };
+    CustomOptional<float> FfxDenoiserStabilityBias { 0.7f };
+    CustomOptional<float> FfxDenoiserMaxRadiance { 2e4f };
+    CustomOptional<float> FfxDenoiserRadianceClip { 40.0f };
     CustomOptional<float> FfxDenoiserGaussKernRelax { 0.5f };
 
     CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
@@ -444,6 +400,9 @@ class Config
     CustomOptional<float> FsrCameraFar { 100000.0f };
     CustomOptional<bool> FsrUseFsrInputValues { true };
 
+    CustomOptional<std::wstring, NoDefault> FfxDx12Path;
+    CustomOptional<std::wstring, NoDefault> FfxVkPath;
+
     // dx11wdx12
     CustomOptional<bool> Dx11DelayedInit { false };
     CustomOptional<bool> DontUseNTShared { true };
@@ -455,6 +414,7 @@ class Config
     // NVAPI Override
     CustomOptional<bool> OverrideNvapiDll { false };
     CustomOptional<bool> DontUseFakenvapiForXeLLOnNvidia { false };
+    CustomOptional<std::wstring, NoDefault> NvapiDllPath;
     CustomOptional<bool> DisableFlipMetering { false };
 
     // Spoofing
@@ -479,11 +439,10 @@ class Config
     CustomOptional<std::wstring> SpoofedDriver { L"32.0.15.9155" };
 
     // Plugins
-    CustomOptional<std::wstring, NoDefault> PluginPath;
+    CustomOptional<std::wstring> PluginPath { L"plugins" };
     CustomOptional<bool> LoadSpecialK { false };
     CustomOptional<bool> LoadReShade { false };
     CustomOptional<bool> LoadAsiPlugins { false };
-    CustomOptional<int> LateAsiPluginsDelay { 30 };
 
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
@@ -499,7 +458,7 @@ class Config
     CustomOptional<bool> FGHudlessValidNow { false };
     CustomOptional<bool> FGOnlyAcceptFirstHudless { false };
     CustomOptional<bool> FGPreserveSwapChain { true };
-    CustomOptional<bool> FGSkipResizeBuffers { false };
+    CustomOptional<bool> FGSkipResizeBuffers { true };
     CustomOptional<bool> FGModifyBufferState { false };
     CustomOptional<bool> FGModifySCIndex { false };
     CustomOptional<FrameTimeSource> FTInput { FrameTimeSource::Input };
@@ -566,7 +525,7 @@ class Config
     CustomOptional<bool> FGXeFGIgnoreInitChecks { false };
     CustomOptional<int> FGXeFGInterpolationCount { 1 };
     CustomOptional<bool> FGXeFGUIComposition { false };
-    CustomOptional<bool> FGXeFGDepthInverted { true };
+    CustomOptional<bool> FGXeFGDepthInverted { false };
     CustomOptional<bool> FGXeFGJitteredMV { false };
     CustomOptional<bool> FGXeFGHighResMV { false };
     CustomOptional<bool> FGXeFGDebugView { false };
