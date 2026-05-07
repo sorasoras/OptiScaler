@@ -1097,6 +1097,16 @@ class FfxApiProxy
         return fg_dx12.version;
     }
 
+    static feature_version VersionTarget_RR()
+    {
+        return
+        {
+            .major = FFX_DENOISER_VERSION_MAJOR,
+            .minor = FFX_DENOISER_VERSION_MINOR,
+            .patch = FFX_DENOISER_VERSION_PATCH
+        };
+    }
+
     static feature_version VersionDx12_RR()
     {
         if (denoiser_dx12.Query == nullptr)
