@@ -292,8 +292,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
 
 constexpr auto kDenoiserModes = std::to_array<std::pair<const char*, int>>(
 { 
-    { "Mode 2", 0 }, 
-    { "Mode 1", 1 }, 
+    { "Mode 2 (Split signals)", 0 }, 
 });
 
 bool FSRDFeatureDx12::s_isHWDepth = false;
@@ -306,7 +305,9 @@ FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InPar
     _denoiserCtxDesc({}),
     _denoiserSettings({}), 
     _convDesc({}),
-    _isMode2(false)
+    _isMode2(true),
+    _dispatchVertFov(0.0f),
+    _dispatchDeltaTime(0.0f)
 {
     _moduleLoaded = FfxApiProxy::IsDenoiserReady();
 
@@ -368,8 +369,9 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     state.ffxDenoiserUpscalerVersion = Version();
     parse_version(state.ffxDenoiserVersionNames[cfg.FfxDenoiserIndex.value_or_default()]);
 
-    // Get current mode and populate mode map
-    _isMode2 = cfg.FfxDenoiserMode.value_or_default() == 0;
+    // FSR-RR 1.2 (SDK 2.3.0) denoises discrete radiance signals; the composited (Mode 1) dispatch
+    // of FSR-RR 1.1 no longer exists, so the split specular/diffuse path is always used.
+    _isMode2 = true;
     state.ffxDenoiserModes.resize(kDenoiserModes.size());
     state.ffxDenoiserModeNames.reserve(kDenoiserModes.size());
     state.ffxDenoiserModes.clear();
@@ -398,7 +400,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         .device = Device
     };    
     // Chain: ContextDesc -> BackendDesc -> OverrideVersion
-    // Composited radiance with fused albedo without a dominant light source
+    // Discrete direct specular and diffuse radiance signals, no checkerboard reconstruction
     _denoiserCtxDesc = 
     {
         .header = 
@@ -409,7 +411,8 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         },
         .version = FFX_DENOISER_VERSION,
         .maxRenderSize = { RenderWidth(), RenderHeight() },
-        .mode = uint32_t(_isMode2 ? FFX_DENOISER_MODE_2_SIGNALS : FFX_DENOISER_MODE_1_SIGNAL),
+        .signalFlags = FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE | FFX_DENOISER_SIGNAL_DIRECT_SPECULAR,
+        .checkerboardSignalFlags = 0,
         .flags = 0
     };
 
@@ -556,23 +559,15 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
         _isInReset = value > 0;
 
     // Denoiser start
-    ffxDispatchDescDenoiserInput1Signal mode1Signal = {};
-    ffxDispatchDescDenoiserInput2Signals mode2Signal = {};
+    ffxDispatchDescDenoiserDirectSpecular specularSignal = {};
+    ffxDispatchDescDenoiserDirectDiffuse diffuseSignal = {};
     ffxDispatchDescDenoiser denoiserDesc = {};
     bool isDenoiserReady = false;
 
     // Pull configuration and input buffers for DLSS-RR from the param table, convert and 
     // repack input buffers into intermediate FSR-RR input buffers, and configure descriptors.
-    if (_isMode2)
-    {
-        if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, mode2Signal))
-            return false;
-    }
-    else
-    {
-        if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, mode1Signal))
-            return false;
-    }
+    if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, specularSignal, diffuseSignal))
+        return false;
 
     // Dispatch denoiser
     if (!isDenoiseBypassed)
@@ -589,7 +584,7 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
 
             dispatchDebugView = 
             { 
-                .header = { .type = FFX_API_DISPATCH_DESC_DEBUG_VIEW_TYPE_DENOISER }, 
+                .header = { .type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DEBUG_VIEW }, 
                 .output = ffxApiGetResourceDX12(dstTex, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
                 .outputSize = { TargetWidth(), TargetHeight() },
                 .mode = FFX_API_DENOISER_DEBUG_VIEW_MODE_OVERVIEW,
@@ -631,8 +626,8 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
         if (isDenoiserReady)
         {
             upscalerDesc.color = ffxApiGetResourceDX12(FSRDConvShader->GetCompositionOutput());
-            upscalerDesc.cameraFovAngleVertical = denoiserDesc.cameraFovAngleVertical;
-            upscalerDesc.frameTimeDelta = denoiserDesc.deltaTime;
+            upscalerDesc.cameraFovAngleVertical = _dispatchVertFov;
+            upscalerDesc.frameTimeDelta = _dispatchDeltaTime;
         }
 
         // Sets optional, configurable resource barriers
@@ -663,10 +658,7 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_Color, srcTex);
         else if (isDebugVis)
         {
-            if (_isMode2)
-                srcTex = GetD3D12ResFromFFX(mode2Signal.specularRadiance.input);
-            else
-                srcTex = GetD3D12ResFromFFX(mode1Signal.radiance.input);
+            srcTex = GetD3D12ResFromFFX(specularSignal.signal.input);
         }
         else
             srcTex = FSRDConvShader->GetCompositionOutput();
@@ -686,9 +678,25 @@ bool FSRDFeatureDx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     return isDenoiserReady || isDenoiseBypassed;
 }
 
-template <typename SignalDescT>
+/**
+ * @brief Packs an DirectXMath matrix (row-major storage, row-vector multiplication) into the
+ * FSR-RR 1.2 matrix layout, which uses the same convention.
+ */
+static FfxApiMatrix4x4 ToFfxMatrix(const XMMATRIX& matrix)
+{
+    FfxApiMatrix4x4 out;
+
+    for (int row = 0; row < 4; row++)
+        out.rows[row] = { matrix.r[row].m128_f32[0], matrix.r[row].m128_f32[1], matrix.r[row].m128_f32[2],
+                          matrix.r[row].m128_f32[3] };
+
+    return out;
+}
+
 bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams,
-    ffxDispatchDescDenoiser& dispatchDesc, SignalDescT& signalDesc)
+                                           ffxDispatchDescDenoiser& dispatchDesc,
+                                           ffxDispatchDescDenoiserDirectSpecular& specularDesc,
+                                           ffxDispatchDescDenoiserDirectDiffuse& diffuseDesc)
 {
     const auto& cfg = *Config::Instance(); 
     const auto& slData = State::Instance().slLastConstants;
@@ -702,12 +710,18 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
 
     // Camera matrix - translation and rotation, from viewMatrix^-1
     const XMFLOAT3 camPos = GetFloat3Column(_invViewMatrix, 3);
-    const XMVECTOR right = XMVector3Normalize(GetColumn(_invViewMatrix, 0));
-    const XMVECTOR up = XMVector3Normalize(GetColumn(_invViewMatrix, 1));
 
-    // FSR-RR requires left handed view matrices
-    XMVECTOR forward = XMVector3Normalize(GetColumn(_invViewMatrix, 2));
-    forward *= _isRightHanded ? -1.0f : 1.0f;
+    // Camera planes, aspect ratio and vertical FOV from the (jittered) projection matrix
+    const float aspectRatio = GetAspectRatioFromProjectionMatrix(_projMatrix);
+    _dispatchVertFov = GetVertFovFromProjectionMatrixRad(_projMatrix);
+    const ViewPlanes planes = GetViewPlanes(_projMatrix, DepthInverted());
+
+    // FSR-RR 1.2 consumes row-major, row-vector (v' = vM) matrices, which is the DirectXMath
+    // native layout. The projection must be unjittered since the jitter offset is provided
+    // separately, so it is reconstructed from the extracted camera parameters instead.
+    const XMMATRIX unjitteredProj = _isRightHanded
+        ? XMMatrixPerspectiveFovRH(_dispatchVertFov, aspectRatio, planes.nearPlane, planes.farPlane)
+        : XMMatrixPerspectiveFovLH(_dispatchVertFov, aspectRatio, planes.nearPlane, planes.farPlane);
 
     // Pack dispatch configuration
     dispatchDesc = 
@@ -716,20 +730,16 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
         .motionVectorScale = { 1.0f, 1.0f, 1.0f },
         // Camera movement since last frame (PreviousPosition - CurrentPosition)
         .cameraPositionDelta = { (_lastCamPos.x - camPos.x), (_lastCamPos.y - camPos.y), (_lastCamPos.z - camPos.z) },
-        .cameraRight = GetFloat3FFX(right),
-        .cameraUp = GetFloat3FFX(up),
-        .cameraForward = GetFloat3FFX(forward),
-        .cameraAspectRatio = GetAspectRatioFromProjectionMatrix(_projMatrix),
-        .cameraNear = _convDesc.NearPlane,
-        .cameraFar = _convDesc.FarPlane,
-        .cameraFovAngleVertical = GetVertFovFromProjectionMatrixRad(_projMatrix),
+        .view = ToFfxMatrix(_viewMatrix),
+        .projection = ToFfxMatrix(unjitteredProj),
+        .linearDepthBounds = { planes.nearPlane, planes.farPlane },
         .renderSize = { RenderWidth(), RenderHeight() }, 
         .frameIndex = (uint32_t)_frameCount,
         .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO
     };
 
-    // Populate resources and link signal header
-    FSRDConvShader->GetSignal(signalDesc, dispatchDesc);
+    // Populate resources and link the per-signal dispatch descriptors
+    FSRDConvShader->GetSignal(specularDesc, diffuseDesc, dispatchDesc);
     
     if (_isInReset)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
@@ -737,12 +747,14 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     // Update camera position for next frame
     _lastCamPos = camPos;
 
-    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_FrameTimeDelta, cfg.FsrUseFsrInputValues, dispatchDesc.deltaTime))
+    // Frame delta time is no longer part of the FSR-RR 1.2 dispatch, but is kept for the
+    // upscaler dispatch override in Evaluate().
+    if (!TryGetToggleableNGXParam(inParams, OptiKeys::FSR_FrameTimeDelta, cfg.FsrUseFsrInputValues, _dispatchDeltaTime))
     {
-        if (inParams.Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &dispatchDesc.deltaTime) !=
-                NVSDK_NGX_Result_Success || dispatchDesc.deltaTime < 1.0f)
+        if (inParams.Get(NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, &_dispatchDeltaTime) !=
+                NVSDK_NGX_Result_Success || _dispatchDeltaTime < 1.0f)
         {
-            dispatchDesc.deltaTime = (float)GetDeltaTime();
+            _dispatchDeltaTime = (float)GetDeltaTime();
         }
     }
 
@@ -993,7 +1005,7 @@ ffxReturnCode_t FSRDFeatureDx12::SetDefaultConfiguration(FfxApiConfigureDenoiser
 
 ffxReturnCode_t FSRDFeatureDx12::ApplyConfiguration(FfxApiConfigureDenoiserKey key)
 {
-    ffxQueryDescDenoiserGetDefaultKeyValue configureDesc = 
+    ffxConfigureDescDenoiserKeyValue configureDesc =
     {
         .header = { .type = FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE }, 
         .key = (uint64_t)key, 

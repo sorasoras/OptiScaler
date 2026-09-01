@@ -10,8 +10,8 @@ struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 struct ID3D12Resource;
 
-struct ffxDispatchDescDenoiserInput1Signal;
-struct ffxDispatchDescDenoiserInput2Signals;
+struct ffxDispatchDescDenoiserDirectSpecular;
+struct ffxDispatchDescDenoiserDirectDiffuse;
 struct ffxDispatchDescDenoiser;
 
 /**
@@ -168,18 +168,14 @@ class FSRDPreprocessor_Dx12
     bool DispatchConversion(ID3D12GraphicsCommandList* cmdList, const ConversionDesc& desc);
 
     /**
-     * @brief Configures input/output resources after input conversion for FSR-RR with Mode-1 fused inputs.
-     * Resources are transitioned to SRV state and valid until the next conversion or composition dispatch.
-     * Must be re-acquired after each dispatch (lifetime managed internally).
+     * @brief Configures input/output resources after input conversion for FSR-RR 1.2 with discrete
+     * direct specular/diffuse signals. Fills both per-signal dispatch descriptors, chains them into
+     * the main dispatch descriptor and transitions resources to SRV state. Resources are valid until
+     * the next conversion or composition dispatch. Must be re-acquired after each dispatch
+     * (lifetime managed internally).
      */
-    void GetSignal(ffxDispatchDescDenoiserInput1Signal& signalDesc, ffxDispatchDescDenoiser& dispatchDesc) const;
-
-    /**
-     * @brief Configures input/output resources after input conversion for FSR-RR with Mode-2 discrete diffuse/specular color.
-     * Resources are transitioned to SRV state and valid until the next conversion or composition dispatch.
-     * Must be re-acquired after each dispatch (lifetime managed internally).
-     */
-    void GetSignal(ffxDispatchDescDenoiserInput2Signals& signalDesc, ffxDispatchDescDenoiser& dispatchDesc) const;
+    void GetSignal(ffxDispatchDescDenoiserDirectSpecular& specularDesc, ffxDispatchDescDenoiserDirectDiffuse& diffuseDesc,
+                   ffxDispatchDescDenoiser& dispatchDesc) const;
 
     /**
      * @brief Composes the denoised radiance from FSR-RR with the skip signal previously generated 

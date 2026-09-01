@@ -62,6 +62,10 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     DenoiserConfiguration _denoiserSettings;
     bool _isMode2;
 
+    // Denoiser dispatch metadata reused by the upscaler dispatch
+    float _dispatchVertFov;   // Vertical FOV extracted from the projection matrix (radians)
+    float _dispatchDeltaTime; // Frame delta time in milliseconds
+
     static bool s_isHWDepth;
     static bool s_isRoughnessPacked;
 
@@ -89,11 +93,12 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
 
     /**
      * @brief Generates FFX denoiser configuration and input buffers from DLSS-RR inputs and NGX configurations.
-     * Converts and repacks resources internally.
+     * Converts and repacks resources internally. Fills the per-signal dispatch descriptors for direct
+     * specular and diffuse radiance and chains them into the main dispatch descriptor.
      */
-    template<typename SignalDescT>
     bool PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& ngxParams,
-                              ffxDispatchDescDenoiser& dispatchDesc, SignalDescT& signalDesc);
+                              ffxDispatchDescDenoiser& dispatchDesc, ffxDispatchDescDenoiserDirectSpecular& specularDesc,
+                              ffxDispatchDescDenoiserDirectDiffuse& diffuseDesc);
 
     /**
      * @brief Retrieves DLSS-RR inputs to populate the inputs for the interop layer in order to generate
