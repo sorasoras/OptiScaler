@@ -766,15 +766,20 @@ void FSR31FeatureDx12::PostProcess(ID3D12GraphicsCommandList* InCommandList, con
         inParams.Get(NVSDK_NGX_Parameter_MV_Scale_X, &rcasConstants.MvScaleX);
         inParams.Get(NVSDK_NGX_Parameter_MV_Scale_Y, &rcasConstants.MvScaleY);
 
+        float cameraNear = cfg.FsrCameraNear.value_or_default();
+        float cameraFar = cfg.FsrCameraFar.value_or_default();
+        inParams.Get(NVSDK_NGX_Parameter_Camera_Near, &cameraNear);
+        inParams.Get(NVSDK_NGX_Parameter_Camera_Far, &cameraFar);
+
         if (DepthInverted())
         {
-            rcasConstants.CameraNear = upscalerDesc.cameraFar;
-            rcasConstants.CameraFar = upscalerDesc.cameraNear;
+            rcasConstants.CameraNear = cameraFar;
+            rcasConstants.CameraFar = cameraNear;
         }
         else
         {
-            rcasConstants.CameraNear = upscalerDesc.cameraNear;
-            rcasConstants.CameraFar = upscalerDesc.cameraFar;
+            rcasConstants.CameraNear = cameraNear;
+            rcasConstants.CameraFar = cameraFar;
         }
 
         // Determine RCAS Output Target

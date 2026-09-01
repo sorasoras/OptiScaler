@@ -132,6 +132,7 @@ class State
     FGOutput activeFgOutput = FGOutput::NoFG;
 
     // Streamline FG inputs
+    sl::Constants slLastConstants = {};
     Sl_Inputs_Dx12 slFGInputs = {};
 
     // OptiFG
