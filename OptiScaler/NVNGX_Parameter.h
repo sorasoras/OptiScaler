@@ -1040,6 +1040,12 @@ inline static NVNGX_Parameters* GetNGXParameters(std::string_view name, bool isP
     return params;
 }
 
+// Compatibility overload for call sites that don't specify persistence
+inline static NVNGX_Parameters* GetNGXParameters(std::string_view name)
+{
+    return GetNGXParameters(name, false);
+}
+
 /**
  * @brief Sets a custom tracking tag to indicate the memory management strategy required by
  * the table, indicated by NGX_AllocTypes.
