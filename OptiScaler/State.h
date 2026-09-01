@@ -10,6 +10,18 @@
 #include <ankerl/unordered_dense.h>
 #include <mutex>
 
+typedef enum WindowsVersion
+{
+    Unknown = 0,
+    WindowsXP,
+    WindowsVista,
+    Windows7,
+    Windows8,
+    Windows8_1,
+    Windows10,
+    Windows11,
+} WindowsVersion;
+
 typedef enum API
 {
     NotSelected = 0,
@@ -23,6 +35,13 @@ enum class FGPreset : uint32_t
     NoFG,
     OptiFG,
     Nukems,
+};
+
+enum class FrameTimeSource : uint32_t
+{
+    Input,
+    Opti,
+    Zero,
 };
 
 enum class FGInput : uint32_t
@@ -53,6 +72,14 @@ enum class WorkingMode : uint32_t
     Other,
 };
 
+enum class GameEngineType : uint32_t
+{
+    Unity,
+    Unreal,
+    Katana,
+    Other,
+};
+
 typedef struct CapturedHudlessInfo
 {
     UINT64 usageCount = 1;
@@ -69,9 +96,12 @@ class State
         return instance;
     }
 
-    std::string GameName;
     std::string GameExe;
+    std::string GameName;
+    std::string GameVersion;
+    GameEngineType GameEngine = GameEngineType::Other;
     ankerl::unordered_dense::map<void*, std::string> DeviceAdapterNames;
+    WindowsVersion WindowsVer = WindowsVersion::Unknown;
 
     bool NvngxDx11Inited = false;
     bool NvngxDx12Inited = false;
@@ -120,6 +150,8 @@ class State
     bool FSRFGFTPchanged = false;
     bool FSRFGInputActive = false;
 
+    bool FGResizing = false;
+
     ankerl::unordered_dense::map<void*, CapturedHudlessInfo> CapturedHudlesses;
     bool ClearCapturedHudlesses = false;
 
@@ -150,6 +182,7 @@ class State
     bool reflexLimitsFps = false;
     bool reflexShowWarning = false;
     bool rtssReflexInjection = false;
+    UINT64 reflexFrameId = 0;
     UINT64 frameCount = 0;
 
     // for realtime changes
@@ -163,10 +196,12 @@ class State
     float lastMipBiasMax = -100.0f;
 
     int xefgMaxInterpolationCount = 1;
+    bool WAR_xefgRequestFGToggle = false;
 
     // DLSS
     bool dlssPresetsOverriddenExternally = false;
     bool dlssPresetsOverridenByOpti = false;
+    uint32_t dlssRenderPresetExternal = 0;
     uint32_t dlssRenderPresetDLAA = 0;
     uint32_t dlssRenderPresetUltraQuality = 0;
     uint32_t dlssRenderPresetQuality = 0;
@@ -177,6 +212,7 @@ class State
     // DLSSD
     bool dlssdPresetsOverriddenExternally = false;
     bool dlssdPresetsOverridenByOpti = false;
+    uint32_t dlssdRenderPresetExternal = 0;
     uint32_t dlssdRenderPresetDLAA = 0;
     uint32_t dlssdRenderPresetUltraQuality = 0;
     uint32_t dlssdRenderPresetQuality = 0;
@@ -198,8 +234,8 @@ class State
     std::vector<uint64_t> ffxUpscalerVersionIds {};
     std::vector<const char*> ffxFGVersionNames {};
     std::vector<uint64_t> ffxFGVersionIds {};
-    uint32_t currentFsr4Model {};
-    
+    std::optional<uint32_t> currentFsr4Preset {};
+
     // FSR-RR
     std::vector<const char*> ffxDenoiserVersionNames {};
     std::vector<uint64_t> ffxDenoiserVersionIds {};
@@ -218,11 +254,13 @@ class State
     // Other checks
     bool isRunningOnNvidia = false;
     std::optional<bool> isRunningOnRDNA4;
+    std::optional<bool> isRunningOnRDNA3;
     bool isPascalOrOlder = false;
     WorkingMode workingMode = WorkingMode::Other;
 
     // Vulkan stuff
     bool vulkanCreatingSC = false;
+    bool creatingD3DDevice = false;
     bool vulkanSkipHooks = false;
     VkInstance VulkanInstance = nullptr;
 
@@ -435,4 +473,18 @@ class ScopedVulkanCreatingSC
         State::Instance().vulkanCreatingSC = true;
     }
     ~ScopedVulkanCreatingSC() { State::Instance().vulkanCreatingSC = previousState; }
+};
+
+class ScopedCreatingD3DDevice
+{
+  private:
+    bool previousState;
+
+  public:
+    ScopedCreatingD3DDevice()
+    {
+        previousState = State::Instance().creatingD3DDevice;
+        State::Instance().creatingD3DDevice = true;
+    }
+    ~ScopedCreatingD3DDevice() { State::Instance().creatingD3DDevice = previousState; }
 };
