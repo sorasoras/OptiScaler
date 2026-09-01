@@ -5,6 +5,8 @@
 #include "Config.h"
 #include "Logger.h"
 
+#include <fsr-rr/ffx_denoiser.h>
+
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
 

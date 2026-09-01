@@ -435,6 +435,7 @@ class Config
     CustomOptional<float> FfxDenoiserGaussKernRelax { 0.5f };
 
     CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
+    CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
 
     // FSR Common
     CustomOptional<float> FsrVerticalFov { 60.0f };
