@@ -602,7 +602,8 @@ void FSR31FeatureDx12::ConfigureUpscaler(const NVSDK_NGX_Parameter& inParams, ff
     // Get reset flag
     upscalerDesc.reset = _isInReset;
 
-    GetRenderResolution(&inParams, &upscalerDesc.renderSize.width, &upscalerDesc.renderSize.height);
+    GetRenderResolution(const_cast<NVSDK_NGX_Parameter*>(&inParams), &upscalerDesc.renderSize.width,
+                        &upscalerDesc.renderSize.height);
     LOG_DEBUG("Input Resolution: {0}x{1}", upscalerDesc.renderSize.width, upscalerDesc.renderSize.height);
 
     // Motion Vector Scaling
@@ -758,18 +759,23 @@ void FSR31FeatureDx12::PostProcess(ID3D12GraphicsCommandList* InCommandList, con
         RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
         // Configure RCAS
-        RcasConstants rcasConstants 
-        {
-            .Sharpness = _sharpness,
-            .DisplaySizeMV = !LowResMV(),
-            .RenderWidth = (int)RenderWidth(),
-            .RenderHeight = (int)RenderHeight(),
-            .DisplayWidth = (int)TargetWidth(),
-            .DisplayHeight = (int)TargetHeight()
-        };
+        RcasConstants rcasConstants {};
+
+        rcasConstants.Sharpness = _sharpness;
 
         inParams.Get(NVSDK_NGX_Parameter_MV_Scale_X, &rcasConstants.MvScaleX);
         inParams.Get(NVSDK_NGX_Parameter_MV_Scale_Y, &rcasConstants.MvScaleY);
+
+        if (DepthInverted())
+        {
+            rcasConstants.CameraNear = upscalerDesc.cameraFar;
+            rcasConstants.CameraFar = upscalerDesc.cameraNear;
+        }
+        else
+        {
+            rcasConstants.CameraNear = upscalerDesc.cameraNear;
+            rcasConstants.CameraFar = upscalerDesc.cameraFar;
+        }
 
         // Determine RCAS Output Target
         // If scaling is next, write to the scaler's internal buffer. Otherwise, write to the final app texture.

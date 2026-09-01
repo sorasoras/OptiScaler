@@ -2752,8 +2752,8 @@ bool MenuCommon::RenderMenu()
                                 // Conversion from 0 -> 6 into nullopt + 0 -> 5 is required
                                 uint32_t configModes = 0;
 
-                                if (config->Fsr4Model.has_value())
-                                    configModes = config->Fsr4Model.value_or(0) + 1;
+                                if (config->Fsr4Preset.has_value())
+                                    configModes = config->Fsr4Preset.value_or(0) + 1;
 
                                 if (configModes < 0 || configModes >= models.size())
                                     configModes = 0;
@@ -2771,15 +2771,15 @@ bool MenuCommon::RenderMenu()
                                         {
                                             uint32_t selection = 0;
 
-                                            if (config->Fsr4Model.has_value())
-                                                selection = config->Fsr4Model.value_or(0) + 1;
+                                            if (config->Fsr4Preset.has_value())
+                                                selection = config->Fsr4Preset.value_or(0) + 1;
 
                                             if (ImGui::Selectable(models[n], selection == n))
                                             {
                                                 if (n < 1)
-                                                    config->Fsr4Model.reset();
+                                                    config->Fsr4Preset.reset();
                                                 else
-                                                    config->Fsr4Model = n - 1;
+                                                    config->Fsr4Preset = n - 1;
 
                                                 state.newBackend = currentBackend;
                                                 MARK_ALL_BACKENDS_CHANGED();
@@ -2802,7 +2802,7 @@ bool MenuCommon::RenderMenu()
 
                                     ImGui::TableNextColumn();
 
-                                    ImGui::Text("Current model: %d", state.currentFsr4Model);
+                                    ImGui::Text("Current model: %d", state.currentFsr4Preset);
 
                                     ImGui::EndTable();
                                 }
