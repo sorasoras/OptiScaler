@@ -4,6 +4,7 @@
 #include "Util.h"
 #include "Config.h"
 #include "Logger.h"
+#include "State.h"
 
 #include <fsr-rr/ffx_denoiser.h>
 
@@ -977,12 +978,12 @@ class FfxApiProxy
                 }
                 else
                 {
-                    LOG_WARN("main_dx12.Query 2 result: {}", (UINT) queryResult);
+                    LOG_WARN("denoiser_dx12.Query 2 result: {}", (UINT) queryResult);
                 }
             }
             else
             {
-                LOG_WARN("main_dx12.Query result: {}", (UINT) queryResult);
+                LOG_WARN("denoiser_dx12.Query result: {}", (UINT) queryResult);
             }
         }
 
@@ -1033,17 +1034,17 @@ class FfxApiProxy
                 if (queryResult == FFX_API_RETURN_OK)
                 {
                     parse_version(versionNames[0], &upscaling_dx12.version);
-                    LOG_INFO("FfxApi Dx12 SR version: {}.{}.{}", upscaling_dx12.version.major,
+                    LOG_INFO("FfxApi Dx12 RR version: {}.{}.{}", upscaling_dx12.version.major,
                              upscaling_dx12.version.minor, upscaling_dx12.version.patch);
                 }
                 else
                 {
-                    LOG_WARN("main_dx12.Query 2 result: {}", (UINT) queryResult);
+                    LOG_WARN("denoiser_dx12.Query 2 result: {}", (UINT) queryResult);
                 }
             }
             else
             {
-                LOG_WARN("main_dx12.Query result: {}", (UINT) queryResult);
+                LOG_WARN("denoiser_dx12.Query result: {}", (UINT) queryResult);
             }
         }
 
@@ -1087,12 +1088,12 @@ class FfxApiProxy
                 }
                 else
                 {
-                    LOG_WARN("main_dx12.Query 2 result: {}", (UINT) queryResult);
+                    LOG_WARN("denoiser_dx12.Query 2 result: {}", (UINT) queryResult);
                 }
             }
             else
             {
-                LOG_WARN("main_dx12.Query result: {}", (UINT) queryResult);
+                LOG_WARN("denoiser_dx12.Query result: {}", (UINT) queryResult);
             }
         }
 
@@ -1118,9 +1119,11 @@ class FfxApiProxy
         {
             ffxQueryDescGetVersions versionQuery {};
             versionQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
-            versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+            versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
             uint64_t versionCount = 0;
             versionQuery.outputCount = &versionCount;
+            // FSR-RR requires a device for version queries when no context exists yet
+            versionQuery.device = State::Instance().currentD3D12Device;
 
             auto queryResult = denoiser_dx12.Query(nullptr, &versionQuery.header);
 
@@ -1141,17 +1144,17 @@ class FfxApiProxy
                 if (queryResult == FFX_API_RETURN_OK)
                 {
                     parse_version(versionNames[0], &denoiser_dx12.version);
-                    LOG_INFO("FfxApi Dx12 SR version: {}.{}.{}", denoiser_dx12.version.major,
+                    LOG_INFO("FfxApi Dx12 RR version: {}.{}.{}", denoiser_dx12.version.major,
                              denoiser_dx12.version.minor, denoiser_dx12.version.patch);
                 }
                 else
                 {
-                    LOG_WARN("main_dx12.Query 2 result: {}", (UINT) queryResult);
+                    LOG_WARN("denoiser_dx12.Query 2 result: {}", (UINT) queryResult);
                 }
             }
             else
             {
-                LOG_WARN("main_dx12.Query result: {}", (UINT) queryResult);
+                LOG_WARN("denoiser_dx12.Query result: {}", (UINT) queryResult);
             }
         }
 
@@ -1190,17 +1193,17 @@ class FfxApiProxy
                 if (queryResult == FFX_API_RETURN_OK)
                 {
                     parse_version(versionNames[0], &radiance_dx12.version);
-                    LOG_INFO("FfxApi Dx12 SR version: {}.{}.{}", radiance_dx12.version.major,
+                    LOG_INFO("FfxApi Dx12 RR version: {}.{}.{}", radiance_dx12.version.major,
                              radiance_dx12.version.minor, radiance_dx12.version.patch);
                 }
                 else
                 {
-                    LOG_WARN("main_dx12.Query 2 result: {}", (UINT) queryResult);
+                    LOG_WARN("denoiser_dx12.Query 2 result: {}", (UINT) queryResult);
                 }
             }
             else
             {
-                LOG_WARN("main_dx12.Query result: {}", (UINT) queryResult);
+                LOG_WARN("denoiser_dx12.Query result: {}", (UINT) queryResult);
             }
         }
 
