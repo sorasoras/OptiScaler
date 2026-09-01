@@ -800,7 +800,7 @@
     <ClInclude Include="shaders\rcas\shaders\DA_RCAS_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shaderssrd_preprocess\FSRDPreprocessor_Dx12.h">
+    <ClInclude Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDInputConv_Shader.h">
