@@ -6290,3 +6290,8 @@ void MenuCommon::HideMenu()
     io.WantCaptureKeyboard = _isVisible;
     io.WantCaptureMouse = _isVisible;
 }
+
+// Present-time housekeeping for the overlay-disabled path.
+// The active menu path updates its frame counters inside RenderMenu(),
+// so there is nothing to do here.
+void MenuCommon::Present() {}
