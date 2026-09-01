@@ -22,6 +22,9 @@
 
 #pragma once
 
+#include "ffx_api.h"
+#include "ffx_api_types.h"
+
 //------------------------------------------------------------------------------
 // OptiScaler compatibility layer
 //
@@ -31,13 +34,27 @@
 // with layouts identical to SDK 2.3.0.
 //------------------------------------------------------------------------------
 
+#ifndef FFX_API_MAKE_EFFECT_SUB_ID
+#define FFX_API_MAKE_EFFECT_SUB_ID(effectId, subversion)     ((effectId & FFX_API_EFFECT_MASK) | (subversion & ~FFX_API_EFFECT_MASK))
+#endif // FFX_API_MAKE_EFFECT_SUB_ID
+
+#ifndef FFX_API_MAKE_BACKEND_SUB_ID
+#define FFX_API_MAKE_BACKEND_SUB_ID(backendId, subversion)     ((backendId & FFX_API_BACKEND_MASK) | (subversion & ~FFX_API_BACKEND_MASK))
+#endif // FFX_API_MAKE_BACKEND_SUB_ID
+
+#ifndef FfxApiFloatCoords3D
+/// Three component float vector.
+typedef struct FfxApiFloatCoords3D
+{
+    float x;
+    float y;
+    float z;
+} FfxApiFloatCoords3D;
+#endif // FfxApiFloatCoords3D
+
 #ifndef FFX_API_EFFECT_ID_DENOISER
 #define FFX_API_EFFECT_ID_DENOISER 0x00050000u
 #endif // FFX_API_EFFECT_ID_DENOISER
-
-#ifndef FFX_API_EFFECT_MASK
-#error "ffx_api.h must define FFX_API_EFFECT_MASK"
-#endif
 
 #ifndef FfxApiFloat4
 /// Four component float vector.
@@ -67,8 +84,6 @@ typedef struct FfxApiFloatBounds
 } FfxApiFloatBounds;
 #endif // FfxApiFloatBounds
 
-#pragma once
-
 //------------------------------------------------------------------------------
 // FFX Includes
 //------------------------------------------------------------------------------
@@ -79,14 +94,14 @@ typedef struct FfxApiFloatBounds
 // ffxCreateContextDescHeader
 // ffxDispatchDescHeader
 // ffxQueryDescHeader
-#include "ffx_api.h"
+
 // FfxApiDimensions2D
 // FfxApiFloatBounds
 // FfxApiFloatCoords2D
 // FfxApiFloatCoords3D
 // FfxApiMatrix4x4
 // FfxApiResource
-#include "../../api/include/ffx_api_types.h"
+
 
 //------------------------------------------------------------------------------
 // External Includes
