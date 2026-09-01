@@ -768,8 +768,6 @@ void FSR31FeatureDx12::PostProcess(ID3D12GraphicsCommandList* InCommandList, con
 
         float cameraNear = cfg.FsrCameraNear.value_or_default();
         float cameraFar = cfg.FsrCameraFar.value_or_default();
-        inParams.Get(NVSDK_NGX_Parameter_Camera_Near, &cameraNear);
-        inParams.Get(NVSDK_NGX_Parameter_Camera_Far, &cameraFar);
 
         if (DepthInverted())
         {

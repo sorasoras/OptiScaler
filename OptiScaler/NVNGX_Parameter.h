@@ -710,6 +710,8 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
             isPersistent ? NGX_AllocTypes::InternPersistent : NGX_AllocTypes::InternDynamic);
     }
 
+    NVNGX_Parameters() : NVNGX_Parameters("", false) {}
+
 #ifdef ENABLE_ENCAPSULATED_PARAMS
     NVSDK_NGX_Parameter* OriginalParam = nullptr;
 #endif // ENABLE_ENCAPSULATED_PARAMS
