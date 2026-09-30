@@ -100,7 +100,7 @@ bool Config::Reload(std::filesystem::path iniPath)
                     FGOutput.set_from_config(FGOutput::XeFG);
             }
 
-            auto ftInput = readInt("FrameGen", "FTSource");
+            auto ftInput = readInt("FrameGen", "FTInput");
             if (ftInput.has_value() && ftInput.value() >= 0 &&
                 ftInput.value() <= (FGOutput.value_or_default() == FGOutput::XeFG ? 2 : 1))
             {
@@ -183,8 +183,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         {
             FGXeFGInterpolationCount.set_from_config(readInt("XeFG", "InterpolationCount"));
-            if (FGXeFGInterpolationCount.has_value() &&
-                (FGXeFGInterpolationCount.value() < 1 || FGXeFGInterpolationCount.value() > 3))
+            if (FGXeFGInterpolationCount.has_value() && FGXeFGInterpolationCount.value() < 1)
                 FGXeFGInterpolationCount.reset();
 
             FGXeFGIgnoreInitChecks.set_from_config(readBool("XeFG", "IgnoreInitChecks"));
@@ -314,7 +313,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Don't enable again if set false because of no nvngx found
             DLSSDRenderPresetOverride.set_from_config(readBool("DLSSD", "RenderPresetOverride"));
 
-            constexpr size_t presetCount = 6;
+            constexpr size_t presetCount = 7;
 
             if (auto setting = readInt("DLSSD", "RenderPresetForAll");
                 setting.has_value() && setting >= 0 && (setting < presetCount || setting == 0x00FFFFFF))
@@ -1239,8 +1238,7 @@ bool Config::SaveIni()
         ini.SetValue("Hotfix", "CheckForUpdate", GetBoolValue(Instance()->CheckForUpdate.value_for_config()).c_str());
         ini.SetValue("Hotfix", "SimulateWaitableObject",
                      GetBoolValue(Instance()->SimulateWaitableObject.value_for_config()).c_str());
-        ini.SetValue("Hotfix", "DisableOverlays",
-                     GetBoolValue(Instance()->DisableOverlays.value_for_config(true)).c_str());
+        ini.SetValue("Hotfix", "DisableOverlays", GetBoolValue(Instance()->DisableOverlays.value_for_config()).c_str());
         ini.SetValue("Hotfix", "ManualInputPolling",
                      GetBoolValue(Instance()->ManualInputPolling.value_for_config()).c_str());
 
@@ -1317,13 +1315,8 @@ bool Config::SaveIni()
 
     // Spoofing
     {
-        // Save Dxgi spoofing value only if it differs from the current GPU vendor
-        bool forceSaveDxgi = Instance()->DxgiSpoofing.has_value() &&
-                             ((State::Instance().isRunningOnNvidia && Instance()->DxgiSpoofing.value()) ||
-                              (!State::Instance().isRunningOnNvidia && !Instance()->DxgiSpoofing.value()));
 
-        ini.SetValue("Spoofing", "Dxgi",
-                     GetBoolValue(Instance()->DxgiSpoofing.value_for_config(forceSaveDxgi)).c_str());
+        ini.SetValue("Spoofing", "Dxgi", GetBoolValue(Instance()->DxgiSpoofing.value_for_config()).c_str());
         ini.SetValue("Spoofing", "DxgiFactoryWrapping",
                      GetBoolValue(Instance()->DxgiFactoryWrapping.value_for_config()).c_str());
         ini.SetValue("Spoofing", "DxgiBlacklist", Instance()->DxgiBlacklist.value_for_config_or("auto").c_str());

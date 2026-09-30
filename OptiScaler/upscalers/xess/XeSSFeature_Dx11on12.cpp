@@ -8,6 +8,8 @@
 #include <include/d3dx/D3DX11tex.h>
 #endif
 
+using Microsoft::WRL::ComPtr;
+
 XeSSFeatureDx11on12::XeSSFeatureDx11on12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
     : IFeature_Dx11wDx12(InHandleId, InParameters), IFeature_Dx11(InHandleId, InParameters),
       IFeature(InHandleId, InParameters), XeSSFeature(InHandleId, InParameters)
@@ -118,6 +120,8 @@ bool XeSSFeatureDx11on12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_N
         return false;
     }
 
+    bool evalResult = false;
+
     if (!RCAS->IsInit())
         Config::Instance()->RcasEnabled = false;
 
@@ -126,6 +130,46 @@ bool XeSSFeatureDx11on12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_N
 
     if (Config::Instance()->DADepthIsLinear.value_for_config_ignore_default() == std::nullopt)
         Config::Instance()->DADepthIsLinear.set_volatile_value(false);
+
+    ComPtr<ID3D11ShaderResourceView> restoreSRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    ComPtr<ID3D11SamplerState> restoreSamplerStates[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+    ComPtr<ID3D11Buffer> restoreCBVs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = {};
+    ComPtr<ID3D11UnorderedAccessView> restoreUAVs[D3D11_1_UAV_SLOT_COUNT] = {};
+    ComPtr<ID3D11RenderTargetView> restoreRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ID3D11RenderTargetView* rawRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ComPtr<ID3D11DepthStencilView> restoreDSV = nullptr;
+
+    // backup compute shader resources
+    for (UINT i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; i++)
+    {
+        InDeviceContext->CSGetShaderResources(i, 1, restoreSRVs[i].GetAddressOf());
+    }
+
+    for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; i++)
+    {
+        InDeviceContext->CSGetSamplers(i, 1, restoreSamplerStates[i].GetAddressOf());
+    }
+
+    for (UINT i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++)
+    {
+        InDeviceContext->CSGetConstantBuffers(i, 1, restoreCBVs[i].GetAddressOf());
+    }
+
+    for (UINT i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+    {
+        InDeviceContext->CSGetUnorderedAccessViews(i, 1, restoreUAVs[i].GetAddressOf());
+    }
+
+    InDeviceContext->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, restoreDSV.GetAddressOf());
+
+    for (UINT i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+    {
+        restoreRTVs[i].Attach(rawRTVs[i]);
+    }
+
+    // Unbind RenderTargets
+    ID3D11RenderTargetView* nullRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    InDeviceContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, nullRTVs, nullptr);
 
     ID3D11DeviceContext4* dc;
     auto result = InDeviceContext->QueryInterface(IID_PPV_ARGS(&dc));
@@ -394,8 +438,6 @@ bool XeSSFeatureDx11on12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_N
         Dx12CommandQueue->Signal(dx12FenceTextureCopy, _fenceValue);
     }
 
-    auto evalResult = false;
-
     do
     {
         if (state != 2)
@@ -439,6 +481,33 @@ bool XeSSFeatureDx11on12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_N
 
     _frameCount++;
     Dx12CommandQueue->Signal(Dx12Fence, _frameCount);
+
+    // restore compute shader resources
+    for (UINT i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; i++)
+    {
+        auto raw = restoreSRVs[i].Get();
+        InDeviceContext->CSSetShaderResources(i, 1, &raw);
+    }
+
+    for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; i++)
+    {
+        auto raw = restoreSamplerStates[i].Get();
+        InDeviceContext->CSSetSamplers(i, 1, &raw);
+    }
+
+    for (UINT i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++)
+    {
+        auto raw = restoreCBVs[i].Get();
+        InDeviceContext->CSSetConstantBuffers(i, 1, &raw);
+    }
+
+    for (UINT i = 0; i < D3D11_1_UAV_SLOT_COUNT; i++)
+    {
+        auto raw = restoreUAVs[i].Get();
+        InDeviceContext->CSSetUnorderedAccessViews(i, 1, &raw, 0);
+    }
+
+    InDeviceContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, restoreDSV.Get());
 
     return evalResult;
 }

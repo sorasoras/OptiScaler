@@ -193,7 +193,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_Ext(unsigned long long InApp
     if (InFeatureInfo != nullptr && InSDKVersion > 0x0000013)
         State::Instance().NVNGX_Logger = InFeatureInfo->LoggingInfo;
 
-    if (State::Instance().NvngxDx12Inited)
+    if (State::Instance().NvngxDx12Inited && InDevice == D3D12Device)
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -264,7 +264,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init(unsigned long long InApplica
         }
     }
 
-    if (State::Instance().NvngxDx12Inited)
+    if (State::Instance().NvngxDx12Inited && InDevice == D3D12Device)
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -331,7 +331,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_ProjectID(const char* InProj
     State::Instance().NVNGX_Engine = InEngineType;
     State::Instance().NVNGX_EngineVersion = std::string(InEngineVersion);
 
-    if (State::Instance().NvngxDx12Inited)
+    if (State::Instance().NvngxDx12Inited && InDevice == D3D12Device)
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -358,7 +358,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_with_ProjectID(
     State::Instance().NVNGX_Engine = InEngineType;
     State::Instance().NVNGX_EngineVersion = std::string(InEngineVersion);
 
-    if (State::Instance().NvngxDx12Inited)
+    if (State::Instance().NvngxDx12Inited && InDevice == D3D12Device)
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
@@ -711,7 +711,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
     D3D12Hooks::RestoreRoot(InCmdList);
     D3D12Hooks::SetRootSignatureTracking(true);
 
-    State::Instance().FGchanged = true;
+    if (State::Instance().activeFgInput == FGInput::Upscaler)
+        State::Instance().FGchanged = true;
 
     return NVSDK_NGX_Result_Success;
 }
@@ -725,9 +726,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 
     auto handleId = InHandle->Id;
 
-    State::Instance().FGchanged = true;
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
     {
+        State::Instance().FGchanged = true;
         State::Instance().currentFG->DestroyFGContext();
         State::Instance().ClearCapturedHudlesses = true;
         UpscalerInputsDx12::Reset();

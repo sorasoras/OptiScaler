@@ -107,6 +107,10 @@ class FSR31FeatureDx12 : public FSR31Feature, public IFeature_Dx12
     bool _isSuperScaling;
     bool _isSharpening;
 
+    // FSR 4 autoexposure WAR: color copies at render size (see PrepareUpscalerInput)
+    ID3D12Resource* smallerColor[2] {};
+    size_t _smallerColorIndex = 0;
+
     InputResources _inputBuffers;
     ID3D12Resource* _upscalerOutput;
     ID3D12Resource* _mainOutput;

@@ -63,6 +63,7 @@ enum class GameQuirk : uint64_t
     ForceDepthD32S8,
     PregmataFixDLSSModes,
     IgnoreValidUntilEvaluateForFG,
+    IgnoreTagsWithoutHudlessForFG,
     ForceFGRenderSizeMVs,
     // Don't forget to add the new entry to printQuirks
     _
@@ -109,8 +110,19 @@ static const QuirkEntry quirkTable[] = {
     // Silent Hill f
     QUIRK_ENTRY_UE(shf, GameQuirk::AlwaysCaptureFSRFGSwapchain),
 
+    // Beast of Reincarnation
+    QUIRK_ENTRY_UE(beastofreincarnation, GameQuirk::DisableFSR2Inputs, GameQuirk::DisableFSR3Inputs,
+                   GameQuirk::AlwaysCaptureFSRFGSwapchain),
+
+    // Space Engineers 2
+    QUIRK_ENTRY("spaceengineers2.exe", GameQuirk::UseManualInputs),
+
     // Tainted Grail - Fall of Avalon
     QUIRK_ENTRY("fall of avalon.exe", GameQuirk::ForceAutoExposure),
+
+    // Granblue Fantasy Relink
+    // Disabled fakenvapi to fix broken rendering
+    QUIRK_ENTRY("granblue_fantasy_relink.exe", GameQuirk::DisableFakenvapi),
 
     // Path of Exile 2
     QUIRK_ENTRY("pathofexile.exe", GameQuirk::LoadD3D12Manually, GameQuirk::DisableDxgiSpoofing),
@@ -137,11 +149,17 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY_UE(client, GameQuirk::DontUseNtDllHooks, GameQuirk::DoNotPreserveFGSwapChain),
 
     // Zenless Zone Zero
-    // IgnoreValidUntilEvaluateForFG fixes flipped Unity MVs/Depth
-    QUIRK_ENTRY("zenlesszonezero.exe", GameQuirk::IgnoreValidUntilEvaluateForFG),
+    // IgnoreTagsWithoutHudlessForFG fixes flipped Unity MVs/Depth
+    QUIRK_ENTRY("zenlesszonezero.exe", GameQuirk::IgnoreTagsWithoutHudlessForFG),
 
     // Trails in the Sky 1st Chapter
     QUIRK_ENTRY("sora_1st.exe", GameQuirk::UseFsr2Dx11Inputs, GameQuirk::DisableDxgiSpoofing),
+
+    // Trails in the Sky 2nd Chapter
+    QUIRK_ENTRY("sora_2nd.exe", GameQuirk::UseFsr2Dx11Inputs, GameQuirk::DisableDxgiSpoofing),
+
+    // Rise of the Tomb Raider
+    QUIRK_ENTRY("rottr.exe", GameQuirk::SkipD3D11FeatureLevelElevation),
 
     // NINJA GAIDEN 4
     // No spoof needed for DLSS inputs
@@ -166,7 +184,7 @@ static const QuirkEntry quirkTable[] = {
     //
     // Kunitsu-Gami: Path of the Goddess, Monster Hunter Wilds, MONSTER HUNTER RISE, Dead Rising Deluxe Remaster
     // (including the demo), Dragon's Dogma 2, PRAGMATA Demo, Resident Evil Requiem, Monster Hunter Stories 3: Twisted
-    // Reflection, PRAGMATA, Onimusha: Way of the Sword Demo
+    // Reflection, PRAGMATA, Onimusha: Way of the Sword (+ Demo)
     QUIRK_ENTRY("kunitsugami.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("kunitsugamidemo.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("monsterhunterwilds.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
@@ -175,7 +193,8 @@ static const QuirkEntry quirkTable[] = {
                 GameQuirk::RestoreComputeSigOnNonNvidia), // AMD/Intel need spoofing, Restoresig seems to fix real DLSS
     QUIRK_ENTRY("drdr.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("dd2ccs.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
-    QUIRK_ENTRY("dd2.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
+    QUIRK_ENTRY("dd2.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
+                GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("pragmata_sketchbook.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::AllowedFrameAhead2, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("re9.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
@@ -185,6 +204,8 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("pragmata.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("onimushawots_demo.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
+                GameQuirk::RestoreComputeSigOnNvidia),
+    QUIRK_ENTRY("onimushawots.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia),
 
     // REF PDUpscaler branch
@@ -355,19 +376,43 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("assettocorsaevo.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure),
 
     // Hellblade: Senua's Sacrifice
-    // No UE barriers to fix crash on upscaler init
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
     QUIRK_ENTRY_UE(hellbladegame, GameQuirk::DisableDxgiSpoofing, GameQuirk::DontUseUnrealColorBarriers,
                    GameQuirk::DontUseUnrealMVBarriers),
 
     // Sackboy: A Big Adventure
-    // No UE barriers to fix crash on upscaler init
+    // SL spoof enough to unlock everything DLSS, no UE barriers to fix crash on upscaler init
     QUIRK_ENTRY_UE(sackboy, GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure,
                    GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
 
     // OUTRIDERS
-    // No UE barriers to fix crash on upscaler init
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
     QUIRK_ENTRY_UE(outriders, GameQuirk::DisableDxgiSpoofing, GameQuirk::DontUseUnrealColorBarriers,
                    GameQuirk::DontUseUnrealMVBarriers),
+
+    // The Medium
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY_UE(medium, GameQuirk::DisableDxgiSpoofing, GameQuirk::DontUseUnrealColorBarriers,
+                   GameQuirk::DontUseUnrealMVBarriers),
+
+    // Observer: System Redux
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY("observersystemredux.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure,
+                GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
+
+    // Pumpkin Jack
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY_UE(pumpkinjack, GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure,
+                   GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
+
+    // Mortal Shell
+    // No spoof needed for DLSS inputs, no UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY_UE(dungeonhaven, GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure,
+                   GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
+
+    // Sword and Fairy 7
+    // No UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY_UE(pal7, GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
 
     // Watch Dogs: Legion
     // AE required to fix FSR4 ghosting
@@ -384,15 +429,22 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("acblackflag.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("acblackflag_plus.exe", GameQuirk::DisableDxgiSpoofing),
 
+    // FBC: Firebreak
+    // SL spoof enough to unlock everything DLSS
+    QUIRK_ENTRY("fbcfirebreak.exe", GameQuirk::DisableDxgiSpoofing),
+
+    // CONTROL Resonant
+    // SL spoof enough to unlock everything DLSS, Preserve FG Swapchain just crashes the DLSSG inputs
+    QUIRK_ENTRY("controlresonant.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::DoNotPreserveFGSwapChain),
+
     // SL spoof enough to unlock everything DLSS/No spoof needed for DLSS inputs
     //
     // The Witcher 3, Alan Wake 2, Crysis 3 Remastered, Marvel's Guardians of the Galaxy, UNCHARTED: Legacy of Thieves
-    // Collection, Warhammer 40,000: Darktide, Observer: System Redux, Pumpkin Jack, Rise of the Ronin, DYNASTY
-    // WARRIORS: ORIGINS, Crysis Remastered, Crysis 2 Remastered, Mortal Shell, Sekiro: Shadows Die Twice (for SekiroTSR
-    // mod), The Medium, God of War (2018), Europa Universalis V, Need for Speed Unbound, Nioh 2 – The Complete Edition,
-    // Control Ultimate Edition, Deathloop, FINAL FANTASY VII REMAKE INTERGRADE (for Luma mod), Farming Simulator 2025,
-    // Nioh 3, FATAL FRAME II: Crimson Butterfly REMAKE, MOUSE: P.I. For Hire, Yet Another Zombie Survivors, Voodoo
-    // Fishin', Forza Horizon 6, Over the Hill (demo), SHROT (demo)
+    // Collection, Warhammer 40,000: Darktide, Rise of the Ronin, DYNASTY WARRIORS: ORIGINS, Crysis Remastered, Crysis 2
+    // Remastered, Sekiro: Shadows Die Twice (for SekiroTSR mod), God of War (2018), Europa Universalis V, Need for
+    // Speed Unbound, Nioh 2 – The Complete Edition, Control Ultimate Edition, Deathloop, FINAL FANTASY VII REMAKE
+    // INTERGRADE (for Luma mod), Farming Simulator 2025, Nioh 3, FATAL FRAME II: Crimson Butterfly REMAKE, MOUSE: P.I.
+    // For Hire, Yet Another Zombie Survivors, Voodoo Fishin', Forza Horizon 6, Over the Hill (demo), SHROT (demo)
     QUIRK_ENTRY("witcher3.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("alanwake2.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("crysis3remastered.exe", GameQuirk::DisableDxgiSpoofing),
@@ -402,15 +454,11 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("tll.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("tll-l.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("darktide.exe", GameQuirk::DisableDxgiSpoofing),
-    QUIRK_ENTRY("observersystemredux.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure),
-    QUIRK_ENTRY_UE(pumpkinjack, GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure),
     QUIRK_ENTRY("ronin.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("dworigins.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("crysisremastered.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("crysis2remastered.exe", GameQuirk::DisableDxgiSpoofing),
-    QUIRK_ENTRY_UE(dungeonhaven, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("sekiro.exe", GameQuirk::DisableDxgiSpoofing), // Sekiro TSR mod required for upscalers
-    QUIRK_ENTRY_UE(medium, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("gow.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("eu5.exe", GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("needforspeedunbound.exe", GameQuirk::DisableDxgiSpoofing),

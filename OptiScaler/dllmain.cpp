@@ -1339,6 +1339,9 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::IgnoreValidUntilEvaluateForFG)
         stringQuirks.push_back("Ignore ValidUntilEvaluate resources for FG");
 
+    if (quirks & GameQuirk::IgnoreTagsWithoutHudlessForFG)
+        stringQuirks.push_back("Ignore tagging calls that lack Hudless resource for FG");
+
     if (quirks & GameQuirk::ForceFGRenderSizeMVs)
         stringQuirks.push_back("Force FG render size motion vectors");
 
@@ -1458,12 +1461,12 @@ static void CheckQuirks()
         quirks.reset(GameQuirk::DontUseNTShared);
 
     if (quirks & GameQuirk::DontUseUnrealColorBarriers && !Config::Instance()->ColorResourceBarrier.has_value())
-        Config::Instance()->ColorResourceBarrier.set_volatile_value(128);
+        Config::Instance()->ColorResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     else
         quirks.reset(GameQuirk::DontUseUnrealColorBarriers);
 
     if (quirks & GameQuirk::DontUseUnrealMVBarriers && !Config::Instance()->MVResourceBarrier.has_value())
-        Config::Instance()->MVResourceBarrier.set_volatile_value(128);
+        Config::Instance()->MVResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     else
         quirks.reset(GameQuirk::DontUseUnrealMVBarriers);
 
