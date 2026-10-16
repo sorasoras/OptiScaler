@@ -1061,9 +1061,10 @@ inline static void SetNGXParamAllocType(NVSDK_NGX_Parameter& params, uint32_t al
  * @brief Retrieves a value from NGX parameters, provided the feature is toggled on.
  * @return True if 'isEnabled' is true AND the NGX parameter was successfully retrieved.
  */
-template <typename T>
+template <typename T, HasDefaultValue defaultState>
+    requires(defaultState != NoDefault)
 static bool TryGetToggleableNGXParam(const NVSDK_NGX_Parameter& ngxParams, const char* key,
-                                     const CustomOptional<bool>& isEnabled, T& outValue)
+                                     const CustomOptional<bool, defaultState>& isEnabled, T& outValue)
 {
     return isEnabled.value_or_default() && (ngxParams.Get(key, &outValue) == NVSDK_NGX_Result_Success);
 }
