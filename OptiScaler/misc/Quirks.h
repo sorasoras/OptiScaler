@@ -249,7 +249,8 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("em-win64-shipping.exe", GameQuirk::DontUseNtDllHooks),
 
     // The Talos Principle 2
-    QUIRK_ENTRY("talos2-win64-shipping.exe", GameQuirk::DoNotPreserveFGSwapChain, GameQuirk::DoNotSkipResize),
+    // Take Control Of The Simulation update - AlwaysCaptureFSRFGSwapchain and removed DoNotPreserveFGSwapChain
+    QUIRK_ENTRY("talos2-win64-shipping.exe", GameQuirk::DoNotSkipResize, GameQuirk::AlwaysCaptureFSRFGSwapchain),
 
     // The Callisto Protocol
     // FSR2 only, no spoof needed
@@ -436,6 +437,9 @@ static const QuirkEntry quirkTable[] = {
     // CONTROL Resonant
     // SL spoof enough to unlock everything DLSS, Preserve FG Swapchain just crashes the DLSSG inputs
     QUIRK_ENTRY("controlresonant.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::DoNotPreserveFGSwapChain),
+
+    // Clive Barker's Hellraiser: Revival
+    QUIRK_ENTRY_UE(hellraiser, GameQuirk::AlwaysCaptureFSRFGSwapchain),
 
     // SL spoof enough to unlock everything DLSS/No spoof needed for DLSS inputs
     //

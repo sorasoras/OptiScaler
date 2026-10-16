@@ -1461,6 +1461,14 @@ bool MenuCommon::RenderMenu()
     if (!_isInited)
         return false;
 
+    static bool triedHooking = false;
+
+    if (!triedHooking && !pfn_SetCursorPos_hooked)
+    {
+        AttachHooks();
+        triedHooking = true;
+    }
+
     auto& state = State::Instance();
     auto config = Config::Instance();
 
